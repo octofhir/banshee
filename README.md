@@ -24,7 +24,7 @@ layer; the grammar, JSONB/JSONPath support, and lint rules target Postgres.
 - **Correct by construction.** Every statement is cross-checked against
   PostgreSQL's own parser (`libpg_query`) in a differential test.
 - **Postgres-native.** JSONB/JSONPath, plus a squawk-class migration-safety
-  pack (MG01–MG24) that generic SQL tools don't have, with a
+  pack (MG01–MG30) that generic SQL tools don't have, with a
   `lint --breaking` gate for backward-incompatible changes.
 - **Fast.** Compiled Rust, no Python or Perl runtime to spin up per file:
 
@@ -206,6 +206,12 @@ and `pgformatter`. `style` selects the engine; shared knobs map across both.
 | MG22 | —       | `CREATE`/`DROP` without `IF [NOT] EXISTS` is not idempotent |
 | MG23 | —       | `CREATE TABLE` name is not schema-qualified |
 | MG24 | —       | Identifier exceeds Postgres's 63-byte limit |
+| MG25 | —       | `REINDEX` without `CONCURRENTLY` locks the index |
+| MG26 | —       | `VACUUM FULL`/`CLUSTER` rewrite the table under a lock |
+| MG27 | —       | Lock-taking migration without a statement/lock timeout |
+| MG28 | —       | `CREATE DOMAIN` with a constraint validates under a lock |
+| MG29 | —       | `ALTER DOMAIN ADD CONSTRAINT` validates under a lock |
+| MG30 | —       | `DETACH PARTITION` without `CONCURRENTLY` locks the parent |
 
 Prefixes: `AL` aliasing, `AM` ambiguity, `ST` structure, `SF` safety, `JB`
 JSONB, `CV` convention, `CP` capitalisation, `RF` references, `MG` migration
@@ -294,7 +300,7 @@ This repo is itself a GitHub Action — it installs `banshee` and runs it, with
 findings shown inline on the PR (`github` format by default):
 
 ```yaml
-- uses: octofhir/banshee@v0.2.0
+- uses: octofhir/banshee@v0.2.1
   with:
     command: lint        # or: format
     args: migrations/
@@ -303,7 +309,7 @@ findings shown inline on the PR (`github` format by default):
 For code scanning, emit SARIF and upload it; the Action writes the file for you:
 
 ```yaml
-- uses: octofhir/banshee@v0.2.0
+- uses: octofhir/banshee@v0.2.1
   with:
     sarif-file: banshee.sarif
 - uses: github/codeql-action/upload-sarif@v3

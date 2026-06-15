@@ -30,7 +30,7 @@ pub fn at_query_start(p: &Parser<'_>) -> bool {
 
 /// True when the current identifier matches `word` (case-insensitive). Used for
 /// PostgreSQL words that are not reserved keywords (ROLLUP, CUBE, TABLESAMPLE…).
-fn at_ident_text(p: &Parser<'_>, word: &str) -> bool {
+pub fn at_ident_text(p: &Parser<'_>, word: &str) -> bool {
     at_ident(p) && p.current_text().eq_ignore_ascii_case(word)
 }
 

@@ -97,6 +97,24 @@ impl<'t> Parser<'t> {
         SyntaxKind::ERROR
     }
 
+    /// Text of the nth non-trivia token ahead (0 = current), `""` past the end.
+    /// Used to dispatch on non-reserved words (e.g. `DOMAIN`, `REINDEX`) without
+    /// turning them into lexer keywords, which would forbid them as identifiers.
+    pub fn nth_text(&self, n: usize) -> &'t str {
+        let mut pos = self.pos;
+        let mut count = 0;
+        while pos < self.tokens.len() {
+            if !self.tokens[pos].kind.is_trivia() {
+                if count == n {
+                    return self.text_at(pos);
+                }
+                count += 1;
+            }
+            pos += 1;
+        }
+        ""
+    }
+
     pub fn at(&self, kind: SyntaxKind) -> bool {
         self.current() == kind
     }

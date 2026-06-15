@@ -71,7 +71,7 @@ straight into a pipeline. With the GitHub Actions formatter, findings annotate
 the diff:
 
 ```yaml
-- uses: octofhir/banshee@v0.2.0
+- uses: octofhir/banshee@v0.2.1
   with:
     command: lint
     args: --breaking --format github migrations/

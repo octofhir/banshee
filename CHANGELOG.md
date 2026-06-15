@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project tracks
 the latest stable Rust toolchain.
 
+## [0.2.1] - 2026-06-15
+
+### Added
+
+- **Migration pack completed to full squawk parity** (MG25–MG30): MG25 `REINDEX`
+  without `CONCURRENTLY`, MG26 `VACUUM FULL`/`CLUSTER` table rewrite (prefer an
+  online repack), MG27 lock-taking migration without a `statement_timeout`/
+  `lock_timeout`, MG28 `CREATE DOMAIN` with a constraint, MG29 `ALTER DOMAIN ADD
+  CONSTRAINT`, MG30 `DETACH PARTITION` without `CONCURRENTLY` — 30 migration
+  codes. Adds `REINDEX`, `CLUSTER`, `CREATE DOMAIN`, and `ALTER DOMAIN` parsing
+  (the non-reserved words stay usable as identifiers).
+
 ## [0.2.0] - 2026-06-15
 
 ### Added

@@ -385,3 +385,85 @@
 - name: short_identifier_ok
   rule: MG24
   pass: "CREATE TABLE t (a int);"
+
+# MG25 — REINDEX without CONCURRENTLY
+- name: reindex_without_concurrently_flagged
+  rule: MG25
+  fail: "REINDEX INDEX idx;"
+
+- name: reindex_table_without_concurrently_flagged
+  rule: MG25
+  fail: "REINDEX TABLE t;"
+
+- name: reindex_concurrently_ok
+  rule: MG25
+  pass: "REINDEX INDEX CONCURRENTLY idx;"
+
+# MG26 — VACUUM FULL / CLUSTER rewrite under a lock
+- name: vacuum_full_flagged
+  rule: MG26
+  fail: "VACUUM FULL t;"
+
+- name: cluster_flagged
+  rule: MG26
+  fail: "CLUSTER t USING idx;"
+
+- name: plain_vacuum_ok
+  rule: MG26
+  pass: "VACUUM t;"
+
+# MG27 — lock-taking migration without a timeout setting
+- name: alter_without_timeout_flagged
+  rule: MG27
+  fail: "ALTER TABLE t ADD COLUMN c int;"
+
+- name: alter_with_lock_timeout_ok
+  rule: MG27
+  pass: "SET lock_timeout = '5s'; ALTER TABLE t ADD COLUMN c int;"
+
+- name: alter_with_statement_timeout_ok
+  rule: MG27
+  pass: "SET statement_timeout = '5s'; ALTER TABLE t ADD COLUMN c int;"
+
+- name: select_without_timeout_ok
+  rule: MG27
+  pass: "SELECT 1;"
+
+# MG28 — CREATE DOMAIN with a constraint
+- name: create_domain_check_flagged
+  rule: MG28
+  fail: "CREATE DOMAIN positive_int AS int CHECK (VALUE > 0);"
+
+- name: create_domain_not_null_flagged
+  rule: MG28
+  fail: "CREATE DOMAIN req_text AS text NOT NULL;"
+
+- name: create_domain_plain_ok
+  rule: MG28
+  pass: "CREATE DOMAIN short_text AS varchar(10);"
+
+# MG29 — ALTER DOMAIN ADD CONSTRAINT
+- name: alter_domain_add_constraint_flagged
+  rule: MG29
+  fail: "ALTER DOMAIN d ADD CONSTRAINT c CHECK (VALUE > 0);"
+
+- name: alter_domain_drop_constraint_ok
+  rule: MG29
+  pass: "ALTER DOMAIN d DROP CONSTRAINT c;"
+
+- name: alter_domain_add_not_valid_ok
+  rule: MG29
+  pass: "ALTER DOMAIN d ADD CONSTRAINT c CHECK (VALUE > 0) NOT VALID;"
+
+# MG30 — DETACH PARTITION without CONCURRENTLY
+- name: detach_partition_flagged
+  rule: MG30
+  fail: "ALTER TABLE t DETACH PARTITION p;"
+
+- name: detach_partition_concurrently_ok
+  rule: MG30
+  pass: "ALTER TABLE t DETACH PARTITION p CONCURRENTLY;"
+
+- name: attach_partition_not_flagged_mg30
+  rule: MG30
+  pass: "ALTER TABLE t ADD COLUMN c int;"

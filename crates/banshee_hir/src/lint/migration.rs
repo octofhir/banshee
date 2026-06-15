@@ -11,7 +11,10 @@
 //! `MG17` drop `NOT NULL` · `MG18` drop database · `MG19` concurrent index
 //! build inside a transaction · `MG20` uncommitted transaction · `MG21`
 //! transaction nesting · `MG22` non-idempotent (`IF [NOT] EXISTS`) statement ·
-//! `MG23` unqualified table name · `MG24` over-long identifier.
+//! `MG23` unqualified table name · `MG24` over-long identifier ·
+//! `MG25` concurrent reindex · `MG26` prefer repack over `VACUUM FULL`/`CLUSTER` ·
+//! `MG27` require a statement/lock timeout · `MG28` domain with constraint ·
+//! `MG29` `ALTER DOMAIN ADD CONSTRAINT` · `MG30` concurrent partition detach.
 
 use banshee_syntax::SyntaxKind;
 use banshee_syntax::SyntaxToken;
@@ -1071,6 +1074,238 @@ impl Rule for IdentifierTooLong {
                     ))
                     .with_code(RuleCode::Mg24)
                     .with_range(token.text_range()),
+                );
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// MG25 / MG26 — concurrent reindex and table-rewriting maintenance
+// ===========================================================================
+
+/// Whether any token under `node` has the given kind.
+fn has_token_kind(node: &banshee_syntax::SyntaxNode, kind: SyntaxKind) -> bool {
+    node.descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .any(|t| t.kind() == kind)
+}
+
+/// Whether any identifier token under `node` equals `text` (case-insensitive).
+fn has_ident_text(node: &banshee_syntax::SyntaxNode, text: &str) -> bool {
+    node.descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .any(|t| {
+            matches!(t.kind(), SyntaxKind::IDENT | SyntaxKind::QUOTED_IDENT)
+                && t.text().eq_ignore_ascii_case(text)
+        })
+}
+
+/// MG25 — `REINDEX` without `CONCURRENTLY` takes a lock that blocks writes for
+/// the whole rebuild. Use `REINDEX … CONCURRENTLY` (Postgres 12+).
+pub(super) struct ReindexConcurrently;
+
+impl Rule for ReindexConcurrently {
+    fn codes(&self) -> &'static [RuleCode] {
+        &[RuleCode::Mg25]
+    }
+    fn group(&self) -> BuiltinLintPack {
+        BuiltinLintPack::Migration
+    }
+    fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        for node in root.descendants() {
+            if node.kind() == SyntaxKind::REINDEX_STMT
+                && !has_token_kind(node, SyntaxKind::CONCURRENTLY_KW)
+            {
+                analyzer.emit(
+                    Diagnostic::warning(
+                        "REINDEX without CONCURRENTLY locks the index against writes for the whole \
+                         rebuild; use REINDEX ... CONCURRENTLY",
+                    )
+                    .with_code(RuleCode::Mg25)
+                    .with_range(node.text_range()),
+                );
+            }
+        }
+    }
+}
+
+/// MG26 — `VACUUM FULL` and `CLUSTER` rewrite the entire table while holding an
+/// exclusive lock. Prefer an online repack (e.g. `pg_repack`) to reclaim space
+/// without blocking reads and writes.
+pub(super) struct PreferRepack;
+
+impl Rule for PreferRepack {
+    fn codes(&self) -> &'static [RuleCode] {
+        &[RuleCode::Mg26]
+    }
+    fn group(&self) -> BuiltinLintPack {
+        BuiltinLintPack::Migration
+    }
+    fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        for node in root.descendants() {
+            let what = match node.kind() {
+                SyntaxKind::CLUSTER_STMT => "CLUSTER",
+                SyntaxKind::VACUUM_STMT if has_token_kind(node, SyntaxKind::FULL_KW) => {
+                    "VACUUM FULL"
+                }
+                _ => continue,
+            };
+            analyzer.emit(
+                Diagnostic::warning(format!(
+                    "{what} rewrites the whole table under an exclusive lock; prefer an online \
+                     repack (e.g. pg_repack) to avoid blocking reads and writes"
+                ))
+                .with_code(RuleCode::Mg26)
+                .with_range(node.text_range()),
+            );
+        }
+    }
+}
+
+// ===========================================================================
+// MG27 — require a statement/lock timeout for lock-taking migrations
+// ===========================================================================
+
+/// MG27 — a migration that takes a heavy lock (`ALTER TABLE`, `CREATE INDEX`)
+/// without a prior `SET statement_timeout`/`SET lock_timeout` can block all
+/// traffic indefinitely while it waits behind a long-running query.
+pub(super) struct RequireTimeoutSettings;
+
+impl Rule for RequireTimeoutSettings {
+    fn codes(&self) -> &'static [RuleCode] {
+        &[RuleCode::Mg27]
+    }
+    fn group(&self) -> BuiltinLintPack {
+        BuiltinLintPack::Migration
+    }
+    fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        let timeout_set = root.descendants().any(|n| {
+            n.kind() == SyntaxKind::SET_STMT
+                && (has_ident_text(n, "statement_timeout") || has_ident_text(n, "lock_timeout"))
+        });
+        if timeout_set {
+            return;
+        }
+        // Flag the first lock-taking statement only, so the file gets one note.
+        if let Some(first) = root.descendants().find(|n| {
+            matches!(
+                n.kind(),
+                SyntaxKind::ALTER_STMT | SyntaxKind::CREATE_INDEX_STMT
+            )
+        }) {
+            analyzer.emit(
+                Diagnostic::warning(
+                    "this migration takes a lock but sets no statement_timeout or lock_timeout; a \
+                     SET lock_timeout before it bounds how long it can block traffic",
+                )
+                .with_code(RuleCode::Mg27)
+                .with_range(first.text_range()),
+            );
+        }
+    }
+}
+
+// ===========================================================================
+// MG28 / MG29 — domain constraints
+// ===========================================================================
+
+/// MG28 — `CREATE DOMAIN` with a `CHECK`/`NOT NULL` constraint bakes a
+/// constraint that is validated under a lock wherever the domain is used and is
+/// awkward to change later. Prefer a plain type plus table `CHECK` constraints.
+pub(super) struct DomainWithConstraint;
+
+impl Rule for DomainWithConstraint {
+    fn codes(&self) -> &'static [RuleCode] {
+        &[RuleCode::Mg28]
+    }
+    fn group(&self) -> BuiltinLintPack {
+        BuiltinLintPack::Migration
+    }
+    fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        for node in root.descendants() {
+            if node.kind() != SyntaxKind::CREATE_DOMAIN_STMT {
+                continue;
+            }
+            let has_constraint = has_token_kind(node, SyntaxKind::CHECK_KW)
+                || (has_token_kind(node, SyntaxKind::NOT_KW)
+                    && has_token_kind(node, SyntaxKind::NULL_KW));
+            if has_constraint {
+                analyzer.emit(
+                    Diagnostic::warning(
+                        "CREATE DOMAIN with a constraint is validated under a lock wherever the \
+                         domain is used and is hard to change later; prefer a plain type with \
+                         table CHECK constraints",
+                    )
+                    .with_code(RuleCode::Mg28)
+                    .with_range(node.text_range()),
+                );
+            }
+        }
+    }
+}
+
+/// MG29 — `ALTER DOMAIN … ADD CONSTRAINT` revalidates every column of that
+/// domain across every table under a lock. Add the constraint `NOT VALID` and
+/// `VALIDATE` it separately, or use table constraints instead.
+pub(super) struct AlterDomainAddConstraint;
+
+impl Rule for AlterDomainAddConstraint {
+    fn codes(&self) -> &'static [RuleCode] {
+        &[RuleCode::Mg29]
+    }
+    fn group(&self) -> BuiltinLintPack {
+        BuiltinLintPack::Migration
+    }
+    fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        for node in root.descendants() {
+            if node.kind() == SyntaxKind::ALTER_DOMAIN_STMT
+                && has_token_kind(node, SyntaxKind::ADD_KW)
+                && !has_token_kind(node, SyntaxKind::NOT_KW)
+            {
+                analyzer.emit(
+                    Diagnostic::warning(
+                        "ALTER DOMAIN ADD CONSTRAINT revalidates every column of the domain under \
+                         a lock; add it NOT VALID and VALIDATE separately",
+                    )
+                    .with_code(RuleCode::Mg29)
+                    .with_range(node.text_range()),
+                );
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// MG30 — DETACH PARTITION without CONCURRENTLY
+// ===========================================================================
+
+/// MG30 — `ALTER TABLE … DETACH PARTITION` without `CONCURRENTLY` takes an
+/// exclusive lock on the parent table for the whole operation. Use `DETACH
+/// PARTITION … CONCURRENTLY` (Postgres 14+).
+pub(super) struct PartitionDetachConcurrently;
+
+impl Rule for PartitionDetachConcurrently {
+    fn codes(&self) -> &'static [RuleCode] {
+        &[RuleCode::Mg30]
+    }
+    fn group(&self) -> BuiltinLintPack {
+        BuiltinLintPack::Migration
+    }
+    fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        for node in root.descendants() {
+            if node.kind() == SyntaxKind::ALTER_STMT
+                && has_ident_text(node, "detach")
+                && has_token_kind(node, SyntaxKind::PARTITION_KW)
+                && !has_token_kind(node, SyntaxKind::CONCURRENTLY_KW)
+            {
+                analyzer.emit(
+                    Diagnostic::warning(
+                        "DETACH PARTITION without CONCURRENTLY holds an exclusive lock on the \
+                         parent table; use DETACH PARTITION ... CONCURRENTLY",
+                    )
+                    .with_code(RuleCode::Mg30)
+                    .with_range(node.text_range()),
                 );
             }
         }

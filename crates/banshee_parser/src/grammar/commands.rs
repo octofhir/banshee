@@ -38,6 +38,20 @@ pub fn analyze_stmt(p: &mut Parser<'_>) {
     m.complete(p, SyntaxKind::ANALYZE_STMT);
 }
 
+pub fn reindex_stmt(p: &mut Parser<'_>) {
+    let m = p.start();
+    p.bump(); // REINDEX (lexed as an identifier)
+    consume_to_semi(p); // [(VERBOSE)] { INDEX | TABLE | SCHEMA | DATABASE } [CONCURRENTLY] name
+    m.complete(p, SyntaxKind::REINDEX_STMT);
+}
+
+pub fn cluster_stmt(p: &mut Parser<'_>) {
+    let m = p.start();
+    p.bump(); // CLUSTER (lexed as an identifier)
+    consume_to_semi(p); // [VERBOSE] [table [USING index]]
+    m.complete(p, SyntaxKind::CLUSTER_STMT);
+}
+
 pub fn copy_stmt(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(); // COPY

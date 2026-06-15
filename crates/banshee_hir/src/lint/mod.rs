@@ -108,6 +108,12 @@ pub(crate) fn builtin_rules() -> &'static [&'static dyn Rule] {
         &migration::RobustStatements,
         &migration::RequireTableSchema,
         &migration::IdentifierTooLong,
+        &migration::ReindexConcurrently,
+        &migration::PreferRepack,
+        &migration::RequireTimeoutSettings,
+        &migration::DomainWithConstraint,
+        &migration::AlterDomainAddConstraint,
+        &migration::PartitionDetachConcurrently,
     ]
 }
 

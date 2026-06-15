@@ -32,6 +32,17 @@ pub(super) fn statement(p: &mut Parser<'_>) {
         return;
     }
 
+    // REINDEX and CLUSTER are non-reserved words (kept as identifiers by the
+    // lexer), so dispatch on their text rather than a keyword kind.
+    if select::at_ident_text(p, "reindex") {
+        commands::reindex_stmt(p);
+        return;
+    }
+    if select::at_ident_text(p, "cluster") {
+        commands::cluster_stmt(p);
+        return;
+    }
+
     match p.current() {
         SyntaxKind::SELECT_KW
         | SyntaxKind::VALUES_KW

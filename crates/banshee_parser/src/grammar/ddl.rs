@@ -57,6 +57,8 @@ pub fn create_stmt(p: &mut Parser<'_>) {
         SyntaxKind::TYPE_KW => create_type_stmt(p),
         SyntaxKind::FUNCTION_KW | SyntaxKind::PROCEDURE_KW => create_function_stmt(p),
         SyntaxKind::TRIGGER_KW => create_trigger_stmt(p),
+        // DOMAIN is non-reserved (lexed as an identifier), so match on its text.
+        _ if p.nth_text(n).eq_ignore_ascii_case("domain") => create_domain_stmt(p),
         other => skip_unsupported(p, format!("unsupported CREATE statement: {other:?}")),
     }
 }
@@ -69,6 +71,26 @@ fn create_type_stmt(p: &mut Parser<'_>) {
     // AS ENUM (…) | AS (…) | AS RANGE (…) | (shell type)
     consume_until_semi(p);
     m.complete(p, SyntaxKind::CREATE_TYPE_STMT);
+}
+
+fn create_domain_stmt(p: &mut Parser<'_>) {
+    let m = p.start();
+    p.bump(); // CREATE
+    p.bump(); // DOMAIN (identifier)
+    relation_name(p);
+    // [AS] data_type [COLLATE c] [DEFAULT expr] [constraint …]
+    consume_until_semi(p);
+    m.complete(p, SyntaxKind::CREATE_DOMAIN_STMT);
+}
+
+fn alter_domain_stmt(p: &mut Parser<'_>) {
+    let m = p.start();
+    p.bump(); // ALTER
+    p.bump(); // DOMAIN (identifier)
+    relation_name(p);
+    // ADD CONSTRAINT …, DROP CONSTRAINT …, SET/DROP DEFAULT, OWNER TO, …
+    consume_until_semi(p);
+    m.complete(p, SyntaxKind::ALTER_DOMAIN_STMT);
 }
 
 fn create_function_stmt(p: &mut Parser<'_>) {
@@ -554,7 +576,12 @@ fn index_elem(p: &mut Parser<'_>) {
 
 pub fn alter_stmt(p: &mut Parser<'_>) {
     if p.nth(1) != SyntaxKind::TABLE_KW {
-        skip_unsupported(p, format!("unsupported ALTER statement: {:?}", p.nth(1)));
+        // DOMAIN is non-reserved (lexed as an identifier), so match on its text.
+        if p.nth_text(1).eq_ignore_ascii_case("domain") {
+            alter_domain_stmt(p);
+        } else {
+            skip_unsupported(p, format!("unsupported ALTER statement: {:?}", p.nth(1)));
+        }
         return;
     }
 

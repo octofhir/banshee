@@ -699,6 +699,77 @@ the wrong object. Use a shorter name.
 
   bad:  CREATE TABLE this_is_a_really_really_really_really_really_really_really_long_table_name (a int);",
     },
+    RuleDoc {
+        code: "MG25",
+        fixable: false,
+        summary: "REINDEX without CONCURRENTLY locks the index for the rebuild",
+        explanation: "\
+REINDEX without CONCURRENTLY locks the index against writes for the whole
+rebuild. Use REINDEX ... CONCURRENTLY (Postgres 12+).
+
+  bad:  REINDEX INDEX idx;
+  good: REINDEX INDEX CONCURRENTLY idx;",
+    },
+    RuleDoc {
+        code: "MG26",
+        fixable: false,
+        summary: "VACUUM FULL / CLUSTER rewrite the table under a lock",
+        explanation: "\
+VACUUM FULL and CLUSTER rewrite the entire table while holding an exclusive
+lock. Prefer an online repack (e.g. pg_repack) to reclaim space without
+blocking reads and writes.
+
+  bad:  VACUUM FULL t;
+  bad:  CLUSTER t USING idx;",
+    },
+    RuleDoc {
+        code: "MG27",
+        fixable: false,
+        summary: "Lock-taking migration without statement/lock timeout",
+        explanation: "\
+A migration that takes a heavy lock (ALTER TABLE, CREATE INDEX) without a prior
+SET statement_timeout / SET lock_timeout can block all traffic indefinitely
+while it waits behind a long-running query. Set a lock_timeout first.
+
+  bad:  ALTER TABLE t ADD COLUMN c int;
+  good: SET lock_timeout = '5s'; ALTER TABLE t ADD COLUMN c int;",
+    },
+    RuleDoc {
+        code: "MG28",
+        fixable: false,
+        summary: "CREATE DOMAIN with a constraint is validated under a lock",
+        explanation: "\
+A CHECK or NOT NULL constraint on a DOMAIN is validated under a lock wherever the
+domain is used and is awkward to change later. Prefer a plain type plus table
+CHECK constraints.
+
+  bad:  CREATE DOMAIN positive_int AS int CHECK (VALUE > 0);
+  good: -- use int, with a table CHECK (col > 0) constraint",
+    },
+    RuleDoc {
+        code: "MG29",
+        fixable: false,
+        summary: "ALTER DOMAIN ADD CONSTRAINT validates under a lock",
+        explanation: "\
+ALTER DOMAIN ADD CONSTRAINT revalidates every column of the domain across every
+table under a lock. Add it NOT VALID and VALIDATE separately, or use table
+constraints instead.
+
+  bad:  ALTER DOMAIN d ADD CONSTRAINT c CHECK (VALUE > 0);
+  good: ALTER DOMAIN d ADD CONSTRAINT c CHECK (VALUE > 0) NOT VALID;",
+    },
+    RuleDoc {
+        code: "MG30",
+        fixable: false,
+        summary: "DETACH PARTITION without CONCURRENTLY holds an exclusive lock",
+        explanation: "\
+ALTER TABLE ... DETACH PARTITION without CONCURRENTLY takes an exclusive lock on
+the parent table for the whole operation. Use DETACH PARTITION ... CONCURRENTLY
+(Postgres 14+).
+
+  bad:  ALTER TABLE t DETACH PARTITION p;
+  good: ALTER TABLE t DETACH PARTITION p CONCURRENTLY;",
+    },
 ];
 
 /// Looks up a rule by code (case-insensitive).

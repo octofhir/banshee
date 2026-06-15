@@ -257,6 +257,18 @@ pub enum RuleCode {
     Mg23,
     /// An identifier longer than Postgres's 63-byte limit (silently truncated).
     Mg24,
+    /// `REINDEX` without `CONCURRENTLY` locks out writes for the rebuild.
+    Mg25,
+    /// `VACUUM FULL`/`CLUSTER` rewrite the table under an exclusive lock.
+    Mg26,
+    /// A lock-taking migration without a `statement_timeout`/`lock_timeout`.
+    Mg27,
+    /// `CREATE DOMAIN` with a constraint validates under a lock and is hard to alter.
+    Mg28,
+    /// `ALTER DOMAIN ADD CONSTRAINT` validates every dependent column under a lock.
+    Mg29,
+    /// `DETACH PARTITION` without `CONCURRENTLY` holds an exclusive lock.
+    Mg30,
 }
 
 /// Rule codes for backward-incompatible (breaking) schema changes: operations
@@ -338,6 +350,12 @@ impl RuleCode {
             RuleCode::Mg22 => "MG22",
             RuleCode::Mg23 => "MG23",
             RuleCode::Mg24 => "MG24",
+            RuleCode::Mg25 => "MG25",
+            RuleCode::Mg26 => "MG26",
+            RuleCode::Mg27 => "MG27",
+            RuleCode::Mg28 => "MG28",
+            RuleCode::Mg29 => "MG29",
+            RuleCode::Mg30 => "MG30",
         }
     }
 
@@ -1308,6 +1326,10 @@ fn is_ddl_or_command_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::COPY_STMT
             | SyntaxKind::GRANT_STMT
             | SyntaxKind::REVOKE_STMT
+            | SyntaxKind::REINDEX_STMT
+            | SyntaxKind::CLUSTER_STMT
+            | SyntaxKind::CREATE_DOMAIN_STMT
+            | SyntaxKind::ALTER_DOMAIN_STMT
     )
 }
 
