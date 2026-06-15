@@ -37,11 +37,13 @@ pub fn run(args: &FixArgs, cli: &Cli) -> Result<u8> {
         .as_ref()
         .map(|p| p as &dyn banshee_hir::SchemaProvider);
 
+    let columns = analysis::migration_columns(&inputs);
+
     // Compute the fixed text per file in parallel; `None` means unchanged.
     let fixed: Vec<Option<String>> = inputs
         .par_iter()
         .map(|input| {
-            let analyzed = analysis::analyze(&input.text, &config, provider_ref);
+            let analyzed = analysis::analyze(&input.text, &config, provider_ref, &columns);
             let edits: Vec<TextEdit> = analyzed
                 .diagnostics
                 .iter()

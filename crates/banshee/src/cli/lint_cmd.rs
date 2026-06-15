@@ -49,11 +49,16 @@ pub fn run(args: &LintArgs, cli: &Cli) -> Result<u8> {
         .as_ref()
         .map(|p| p as &dyn banshee_hir::SchemaProvider);
 
+    // Cross-file column history powers schema-aware checks (e.g. MG06 widenings).
+    let columns = super::analysis::migration_columns(&inputs);
+
     // Analyze in parallel (the provider is Sync), then report in input order so
     // output is deterministic and never interleaved.
     let per_file: Vec<Vec<Diagnostic>> = inputs
         .par_iter()
-        .map(|input| super::analysis::analyze(&input.text, &config, provider_ref).diagnostics)
+        .map(|input| {
+            super::analysis::analyze(&input.text, &config, provider_ref, &columns).diagnostics
+        })
         .collect();
     let total: usize = per_file.iter().map(Vec::len).sum();
     let errors = per_file

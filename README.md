@@ -300,7 +300,7 @@ This repo is itself a GitHub Action — it installs `banshee` and runs it, with
 findings shown inline on the PR (`github` format by default):
 
 ```yaml
-- uses: octofhir/banshee@v0.2.1
+- uses: octofhir/banshee@v0.2.2
   with:
     command: lint        # or: format
     args: migrations/
@@ -309,7 +309,7 @@ findings shown inline on the PR (`github` format by default):
 For code scanning, emit SARIF and upload it; the Action writes the file for you:
 
 ```yaml
-- uses: octofhir/banshee@v0.2.1
+- uses: octofhir/banshee@v0.2.2
   with:
     sarif-file: banshee.sarif
 - uses: github/codeql-action/upload-sarif@v3

@@ -6,14 +6,26 @@
 
 use banshee_config::{BansheeConfig, SeverityLevel};
 use banshee_hir::{
-    AnalysisOptions, BuiltinLintPack, Diagnostic, NullSchemaProvider, SchemaProvider, Severity,
-    analyze_query_with_options,
+    AnalysisOptions, BuiltinLintPack, Diagnostic, MigrationColumns, NullSchemaProvider,
+    SchemaProvider, Severity, analyze_query_with_options, collect_migration_columns,
 };
+
+use super::io::InputFile;
 
 /// The result of analyzing one source file.
 pub struct Analyzed {
     /// Lint findings and syntax errors surviving rule selection.
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Builds cumulative column knowledge across every input file, so migration
+/// rules can reason about a column's type history (e.g. MG06 safe widenings).
+pub fn migration_columns(inputs: &[InputFile]) -> MigrationColumns {
+    let roots: Vec<_> = inputs
+        .iter()
+        .map(|input| banshee_parser::parse(&input.text).syntax())
+        .collect();
+    collect_migration_columns(&roots)
 }
 
 /// Parses and analyzes `text` under the given configuration.
@@ -26,6 +38,7 @@ pub fn analyze(
     text: &str,
     config: &BansheeConfig,
     provider: Option<&dyn SchemaProvider>,
+    migration_columns: &MigrationColumns,
 ) -> Analyzed {
     // Substitute placeholders first, when a templater style is configured, so
     // parameterised SQL parses. Diagnostics are mapped back to `text` below.
@@ -37,7 +50,8 @@ pub fn analyze(
 
     let parse = banshee_parser::parse(input);
 
-    let options = build_options(config);
+    let mut options = build_options(config);
+    options.migration_columns = migration_columns.clone();
     let null = NullSchemaProvider;
     let active: &dyn SchemaProvider = provider.unwrap_or(&null);
     let analysis = analyze_query_with_options(&parse, active, &options);

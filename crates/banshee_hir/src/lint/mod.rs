@@ -19,6 +19,8 @@ use banshee_syntax::SyntaxKind;
 
 use crate::analyze::{AnalysisOptions, Analyzer, BuiltinLintPack, RuleCode};
 
+pub use migration::collect_migration_columns;
+
 mod aliasing;
 mod ambiguity;
 mod capitalisation;

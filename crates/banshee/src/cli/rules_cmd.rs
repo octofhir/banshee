@@ -488,9 +488,12 @@ deploy, then drop it once nothing depends on it.
         explanation: "\
 Changing a column's type rewrites the table under an exclusive lock and can fail
 or lose data on an incompatible conversion. Add a new column, backfill, and swap
-over instead.
+over instead. A provable safe widening (e.g. int -> bigint, varchar(50) -> text),
+determined from the column's type history across the whole migration set, is not
+flagged.
 
-  bad:  ALTER TABLE t ALTER COLUMN c TYPE bigint;",
+  bad:  ALTER TABLE t ALTER COLUMN c TYPE int;     -- narrowing bigint -> int
+  ok:   ALTER TABLE t ALTER COLUMN c TYPE bigint;  -- widening int -> bigint",
     },
     RuleDoc {
         code: "MG07",

@@ -74,6 +74,18 @@
   rule: MG04
   pass: "ALTER TABLE t ADD COLUMN c int;"
 
+- name: add_not_null_to_table_created_same_file_ok
+  rule: MG04
+  pass: "CREATE TABLE t (id bigint); ALTER TABLE t ADD COLUMN c int NOT NULL;"
+
+- name: add_not_null_generated_identity_ok
+  rule: MG04
+  pass: "ALTER TABLE t ADD COLUMN id int NOT NULL GENERATED ALWAYS AS IDENTITY;"
+
+- name: add_not_null_generated_stored_ok
+  rule: MG04
+  pass: "ALTER TABLE t ADD COLUMN f int NOT NULL GENERATED ALWAYS AS (a + b) STORED;"
+
 # MG05 — DROP COLUMN
 - name: drop_column_flagged
   rule: MG05
@@ -94,6 +106,10 @@
 - name: add_column_not_drop_ok
   rule: MG05
   pass: "ALTER TABLE t ADD COLUMN c int;"
+
+- name: drop_column_from_table_created_same_file_ok
+  rule: MG05
+  pass: "CREATE TABLE t (id bigint, c int); ALTER TABLE t DROP COLUMN c;"
 
 # MG06 — ALTER COLUMN TYPE
 - name: alter_column_type_flagged
@@ -125,9 +141,9 @@
   rule: MG07
   fail: "ALTER TABLE t RENAME a TO b;"
 
-- name: rename_constraint_flagged
+- name: rename_constraint_not_breaking_ok
   rule: MG07
-  fail: "ALTER TABLE t RENAME CONSTRAINT a TO b;"
+  pass: "ALTER TABLE t RENAME CONSTRAINT a TO b;"
 
 - name: alter_add_column_not_rename
   rule: MG07
@@ -277,6 +293,10 @@
 - name: drop_index_not_flagged_mg16
   rule: MG16
   pass: "DROP INDEX i;"
+
+- name: drop_table_created_same_file_ok
+  rule: MG16
+  pass: "CREATE TEMP TABLE tmp (x int); DROP TABLE tmp;"
 
 # MG17 — ALTER COLUMN DROP NOT NULL
 - name: drop_not_null_flagged

@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project tracks
 the latest stable Rust toolchain.
 
+## [0.2.2] - 2026-06-15
+
+### Changed
+
+- **Fewer false positives in the breaking gate.** `lint --breaking` no longer
+  flags: `ADD COLUMN NOT NULL` on a table created in the same migration or on a
+  `GENERATED` column (identity/stored) — MG04; `DROP COLUMN`/`DROP TABLE` of an
+  object created in the same migration (e.g. temp scaffolding) — MG05/MG16;
+  `RENAME CONSTRAINT`, which is not visible to clients — MG07.
+- **Schema-aware MG06.** `ALTER COLUMN … TYPE` now reads the column's type
+  history across the whole migration set (`collect_migration_columns`) and skips
+  provable safe widenings (`int → bigint`, `real → double precision`,
+  `varchar(n) → text`/`varchar(m≥n)`). Narrowings and unprovable changes are
+  still flagged; a column retyped more than once is always flagged. Wired into
+  `lint`/`fix` via `AnalysisOptions::migration_columns`.
+
 ## [0.2.1] - 2026-06-15
 
 ### Added

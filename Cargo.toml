@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/octofhir/banshee"
@@ -46,13 +46,13 @@ clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
 
 # Internal crates
-banshee_syntax = { path = "crates/banshee_syntax", version = "0.2.1" }
-banshee_lexer = { path = "crates/banshee_lexer", version = "0.2.1" }
-banshee_parser = { path = "crates/banshee_parser", version = "0.2.1" }
-banshee_hir = { path = "crates/banshee_hir", version = "0.2.1" }
-banshee_completion = { path = "crates/banshee_completion", version = "0.2.1" }
-banshee_format = { path = "crates/banshee_format", version = "0.2.1" }
-banshee_config = { path = "crates/banshee_config", version = "0.2.1" }
-banshee_templater = { path = "crates/banshee_templater", version = "0.2.1" }
-banshee_schema = { path = "crates/banshee_schema", version = "0.2.1" }
-banshee_lsp = { path = "crates/banshee_lsp", version = "0.2.1" }
+banshee_syntax = { path = "crates/banshee_syntax", version = "0.2.2" }
+banshee_lexer = { path = "crates/banshee_lexer", version = "0.2.2" }
+banshee_parser = { path = "crates/banshee_parser", version = "0.2.2" }
+banshee_hir = { path = "crates/banshee_hir", version = "0.2.2" }
+banshee_completion = { path = "crates/banshee_completion", version = "0.2.2" }
+banshee_format = { path = "crates/banshee_format", version = "0.2.2" }
+banshee_config = { path = "crates/banshee_config", version = "0.2.2" }
+banshee_templater = { path = "crates/banshee_templater", version = "0.2.2" }
+banshee_schema = { path = "crates/banshee_schema", version = "0.2.2" }
+banshee_lsp = { path = "crates/banshee_lsp", version = "0.2.2" }

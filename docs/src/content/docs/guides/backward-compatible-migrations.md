@@ -71,7 +71,7 @@ straight into a pipeline. With the GitHub Actions formatter, findings annotate
 the diff:
 
 ```yaml
-- uses: octofhir/banshee@v0.2.1
+- uses: octofhir/banshee@v0.2.2
   with:
     command: lint
     args: --breaking --format github migrations/
@@ -94,6 +94,28 @@ Catch breaking migrations before they are committed:
       language: system
       files: ^migrations/.*\.sql$
 ```
+
+## What the gate does *not* flag
+
+The gate is context-aware to avoid false alarms on changes that are not actually
+breaking:
+
+- A table created in the **same migration file** has no deployed clients or rows
+  yet, so adding a `NOT NULL` column to it, or dropping it/its columns, is not
+  flagged (handy for temp scaffolding).
+- An `ADD COLUMN NOT NULL` that is `GENERATED` (identity or computed) supplies
+  its own value for every row, so it is safe.
+- `RENAME CONSTRAINT` is not flagged — constraint names are not referenced by
+  client code.
+- An `ALTER COLUMN … TYPE` that is a **provable safe widening** — determined from
+  the column's type history across the whole migration directory — is not
+  flagged: `int → bigint`, `real → double precision`, `varchar(n) → text` or
+  `varchar(m)` with `m ≥ n`. Narrowings (`bigint → int`, `varchar(100) →
+  varchar(50)`) still fail, and a column whose type is unknown or changed more
+  than once is treated conservatively (flagged).
+
+These never hide a real breaking change: when banshee cannot prove a change is
+safe, it flags it.
 
 ## Advisory vs blocking
 

@@ -25,7 +25,10 @@ use banshee_syntax::ast::{
 use text_size::TextRange;
 
 use super::Rule;
-use crate::analyze::{Analyzer, BuiltinLintPack, Diagnostic, Fix, RuleCode, TextEdit};
+use crate::analyze::{
+    Analyzer, BuiltinLintPack, Diagnostic, Fix, MigrationColumn, MigrationColumns, RuleCode,
+    TextEdit,
+};
 
 /// End offset of the first direct child token of `kind`, for inserting text.
 fn token_end(node: &banshee_syntax::SyntaxNode, kind: SyntaxKind) -> Option<text_size::TextSize> {
@@ -53,6 +56,149 @@ fn base_type(ty: &TypeName) -> String {
         .unwrap_or("")
         .trim()
         .to_string()
+}
+
+/// Bare names (lowercased) of every table `CREATE TABLE`d in this source.
+///
+/// A migration is linted one file at a time, so a table created here has no
+/// deployed clients or existing rows yet — operations on it in the same file
+/// (add a `NOT NULL` column, drop it) are not backward-incompatible. The
+/// breaking rules use this to suppress those false positives.
+fn tables_created_in_file(root: &banshee_syntax::SyntaxNode) -> std::collections::HashSet<String> {
+    root.descendants()
+        .filter_map(|n| CreateTableStmt::cast(n.clone()))
+        .filter_map(|ct| ct.name().and_then(|name| name.name()))
+        .map(|tok| tok.text().to_ascii_lowercase())
+        .collect()
+}
+
+/// The bare, lowercased table name an `ALTER TABLE` action targets.
+fn altered_table_name(action: &AlterTableAction) -> Option<String> {
+    let alter = action
+        .syntax()
+        .parent()
+        .cloned()
+        .and_then(AlterStmt::cast)?;
+    alter
+        .table()
+        .and_then(|name| name.name())
+        .map(|tok| tok.text().to_ascii_lowercase())
+}
+
+/// Folds the DDL of a whole migration set into cumulative column knowledge:
+/// each column's original type and how many times its type is later changed.
+/// Pass every migration file's parsed root, in apply order; the result powers
+/// schema-aware checks such as MG06's safe-widening exemption.
+pub fn collect_migration_columns(roots: &[banshee_syntax::SyntaxNode]) -> MigrationColumns {
+    let mut cols = MigrationColumns::new();
+    for root in roots {
+        for node in root.descendants() {
+            if let Some(ct) = CreateTableStmt::cast(node.clone()) {
+                let Some(table) = ct.name().and_then(|n| n.name()) else {
+                    continue;
+                };
+                let table = table.text().to_ascii_lowercase();
+                for col in ct.columns() {
+                    if let (Some(name), Some(ty)) = (col.name(), col.type_name()) {
+                        record_definition(&mut cols, &table, name.text(), &ty);
+                    }
+                }
+                continue;
+            }
+            if let Some(action) = AlterTableAction::cast(node.clone()) {
+                let Some(table) = altered_table_name(&action) else {
+                    continue;
+                };
+                match action.kind() {
+                    AlterActionKind::AddColumn => {
+                        if let Some(col) = action.added_column()
+                            && let (Some(name), Some(ty)) = (col.name(), col.type_name())
+                        {
+                            record_definition(&mut cols, &table, name.text(), &ty);
+                        }
+                    }
+                    AlterActionKind::AlterColumn if action.changes_type() => {
+                        if let Some(name) = action.target_name() {
+                            let key = format!("{table}.{}", name.text().to_ascii_lowercase());
+                            cols.entry(key).or_default().type_changes += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    cols
+}
+
+/// Records a column's original type the first time it is defined.
+fn record_definition(cols: &mut MigrationColumns, table: &str, column: &str, ty: &TypeName) {
+    let key = format!("{table}.{}", column.to_ascii_lowercase());
+    let entry = cols.entry(key).or_default();
+    if entry.original_type.is_empty() {
+        entry.original_type = base_type(ty);
+        entry.original_type_text = ty.text().to_ascii_lowercase();
+    }
+}
+
+/// Whether changing a column from `old` to `new_ty` is a backward-compatible
+/// widening (existing data still fits, readers still get a compatible value).
+/// Conservative: anything not provably widening returns `false`.
+fn is_safe_widening(old: &MigrationColumn, new_ty: &TypeName) -> bool {
+    let new_base = base_type(new_ty);
+    let old_base = old.original_type.as_str();
+
+    // Integer widening ladder: smallint < integer < bigint.
+    let int_rank = |b: &str| match b {
+        "smallint" | "int2" => Some(1u8),
+        "integer" | "int" | "int4" => Some(2),
+        "bigint" | "int8" => Some(3),
+        _ => None,
+    };
+    if let (Some(o), Some(n)) = (int_rank(old_base), int_rank(&new_base)) {
+        return n >= o;
+    }
+
+    // Floating point: real < double precision.
+    let float_rank = |b: &str| match b {
+        "real" | "float4" => Some(1u8),
+        "double precision" | "float8" => Some(2),
+        _ => None,
+    };
+    if let (Some(o), Some(n)) = (float_rank(old_base), float_rank(&new_base)) {
+        return n >= o;
+    }
+
+    let is_charlike = |b: &str| matches!(b, "char" | "character" | "varchar" | "character varying");
+    // char/varchar(n) → text is always a widening (text is unbounded).
+    if is_charlike(old_base) && new_base == "text" {
+        return true;
+    }
+    // varchar(n) → varchar(m) with m >= n (or unbounded) is a widening.
+    if is_charlike(old_base) && matches!(new_base.as_str(), "varchar" | "character varying") {
+        return length_nondecreasing(&old.original_type_text, &new_ty.text().to_ascii_lowercase());
+    }
+    false
+}
+
+/// The `(n)` length modifier of a declared type, if any (`varchar(50)` → 50).
+fn type_length(text: &str) -> Option<u64> {
+    text.split('(')
+        .nth(1)?
+        .split(')')
+        .next()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Whether `new`'s length is >= `old`'s, treating a missing modifier as unbounded.
+fn length_nondecreasing(old: &str, new: &str) -> bool {
+    match (type_length(old), type_length(new)) {
+        (_, None) => true,            // new is unbounded
+        (None, Some(_)) => false,     // old unbounded, new bounded → narrowing
+        (Some(o), Some(n)) => n >= o, // both bounded
+    }
 }
 
 // ===========================================================================
@@ -256,20 +402,31 @@ impl Rule for AddColumnNotNullNoDefault {
         BuiltinLintPack::Migration
     }
     fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        let created = tables_created_in_file(root);
         for action in added_columns(root) {
             let Some(col) = action.added_column() else {
                 continue;
             };
-            if col.is_not_null() && col.default_expr().is_none() {
-                analyzer.emit(
-                    Diagnostic::warning(
-                        "ADD COLUMN NOT NULL without a DEFAULT fails on a table that already \
-                         has rows",
-                    )
-                    .with_code(RuleCode::Mg04)
-                    .with_range(action.syntax().text_range()),
-                );
+            if !col.is_not_null() || col.default_expr().is_some() {
+                continue;
             }
+            // A GENERATED column (identity or computed) supplies its own value
+            // for every row, so NOT NULL does not fail on existing data.
+            if has_token_kind(col.syntax(), SyntaxKind::GENERATED_KW) {
+                continue;
+            }
+            // A table created in this same migration has no rows yet.
+            if altered_table_name(&action).is_some_and(|t| created.contains(&t)) {
+                continue;
+            }
+            analyzer.emit(
+                Diagnostic::warning(
+                    "ADD COLUMN NOT NULL without a DEFAULT fails on a table that already \
+                     has rows",
+                )
+                .with_code(RuleCode::Mg04)
+                .with_range(action.syntax().text_range()),
+            );
         }
     }
 }
@@ -298,25 +455,33 @@ impl Rule for DropColumn {
         BuiltinLintPack::Migration
     }
     fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        let created = tables_created_in_file(root);
         for node in root.descendants() {
             let Some(action) = AlterTableAction::cast(node.clone()) else {
                 continue;
             };
-            if action.kind() == AlterActionKind::DropColumn {
-                analyzer.emit(
-                    Diagnostic::warning(
-                        "DROP COLUMN destroys the column's data and breaks dependent objects",
-                    )
-                    .with_code(RuleCode::Mg05)
-                    .with_range(action.syntax().text_range()),
-                );
+            if action.kind() != AlterActionKind::DropColumn {
+                continue;
             }
+            // Dropping from a table created in this same migration is harmless.
+            if altered_table_name(&action).is_some_and(|t| created.contains(&t)) {
+                continue;
+            }
+            analyzer.emit(
+                Diagnostic::warning(
+                    "DROP COLUMN destroys the column's data and breaks dependent objects",
+                )
+                .with_code(RuleCode::Mg05)
+                .with_range(action.syntax().text_range()),
+            );
         }
     }
 }
 
 /// MG06 — `ALTER COLUMN … TYPE` rewrites the table under an exclusive lock and
-/// can fail or lose data on an incompatible conversion.
+/// can fail or lose data on an incompatible conversion. A provable safe widening
+/// (e.g. `int` → `bigint`, `varchar(50)` → `text`), determined from the column's
+/// type history across the whole migration set, is not flagged.
 pub(super) struct AlterColumnType;
 
 impl Rule for AlterColumnType {
@@ -327,21 +492,44 @@ impl Rule for AlterColumnType {
         BuiltinLintPack::Migration
     }
     fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        let columns = analyzer.migration_columns();
         for node in root.descendants() {
             let Some(action) = AlterTableAction::cast(node.clone()) else {
                 continue;
             };
-            if action.changes_type() {
-                analyzer.emit(
-                    Diagnostic::warning(
-                        "ALTER COLUMN TYPE rewrites the table under an exclusive lock",
-                    )
+            if !action.changes_type() {
+                continue;
+            }
+            if is_widening_only(&action, columns) {
+                continue;
+            }
+            analyzer.emit(
+                Diagnostic::warning("ALTER COLUMN TYPE rewrites the table under an exclusive lock")
                     .with_code(RuleCode::Mg06)
                     .with_range(action.syntax().text_range()),
-                );
-            }
+            );
         }
     }
+}
+
+/// Whether this `ALTER COLUMN TYPE` is a provable, backward-compatible widening.
+///
+/// Only trusted when the column's original type is known and it is retyped
+/// exactly once across the set, so a column retyped twice (e.g. `int → bigint →
+/// int`) is never mistaken for a one-step widening.
+fn is_widening_only(action: &AlterTableAction, columns: &MigrationColumns) -> bool {
+    let (Some(table), Some(target), Some(new_ty)) = (
+        altered_table_name(action),
+        action.target_name(),
+        action.new_type(),
+    ) else {
+        return false;
+    };
+    let key = format!("{table}.{}", target.text().to_ascii_lowercase());
+    let Some(info) = columns.get(&key) else {
+        return false;
+    };
+    info.type_changes == 1 && !info.original_type.is_empty() && is_safe_widening(info, &new_ty)
 }
 
 /// MG07 — renaming a table or column breaks every query, view, and client that
@@ -360,20 +548,26 @@ impl Rule for Rename {
             let Some(alter) = AlterStmt::cast(node.clone()) else {
                 continue;
             };
-            if alter.is_rename() {
-                let what = if alter.renames_subobject() {
-                    "a column or constraint"
-                } else {
-                    "a table"
-                };
-                analyzer.emit(
-                    Diagnostic::warning(format!(
-                        "RENAME of {what} breaks code that still refers to the old name"
-                    ))
-                    .with_code(RuleCode::Mg07)
-                    .with_range(alter.syntax().text_range()),
-                );
+            if !alter.is_rename() {
+                continue;
             }
+            // Renaming a constraint does not break client code (constraint names
+            // are not referenced by queries), so it is not a breaking change.
+            if has_token_kind(alter.syntax(), SyntaxKind::CONSTRAINT_KW) {
+                continue;
+            }
+            let what = if alter.renames_subobject() {
+                "a column"
+            } else {
+                "a table"
+            };
+            analyzer.emit(
+                Diagnostic::warning(format!(
+                    "RENAME of {what} breaks code that still refers to the old name"
+                ))
+                .with_code(RuleCode::Mg07)
+                .with_range(alter.syntax().text_range()),
+            );
         }
     }
 }
@@ -710,19 +904,29 @@ impl Rule for DropTable {
         BuiltinLintPack::Migration
     }
     fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        let created = tables_created_in_file(root);
         for node in root.descendants() {
             let Some(stmt) = DropStmt::cast(node.clone()) else {
                 continue;
             };
-            if stmt.object_kind() == Some(SyntaxKind::TABLE_KW) {
-                analyzer.emit(
-                    Diagnostic::warning(
-                        "DROP TABLE destroys the table and everything depending on it",
-                    )
+            if stmt.object_kind() != Some(SyntaxKind::TABLE_KW) {
+                continue;
+            }
+            // Dropping a table created in this same migration (e.g. temp
+            // scaffolding) destroys nothing a deployed client depends on.
+            let dropped: Vec<String> = stmt
+                .names()
+                .filter_map(|n| n.name())
+                .map(|t| t.text().to_ascii_lowercase())
+                .collect();
+            if !dropped.is_empty() && dropped.iter().all(|t| created.contains(t)) {
+                continue;
+            }
+            analyzer.emit(
+                Diagnostic::warning("DROP TABLE destroys the table and everything depending on it")
                     .with_code(RuleCode::Mg16)
                     .with_range(stmt.syntax().text_range()),
-                );
-            }
+            );
         }
     }
 }

@@ -518,14 +518,41 @@ pub struct AnalysisOptions {
     /// Per-rule options, keyed by rule code then option name. Values are
     /// stringified; list-valued options are comma-joined.
     pub rule_options: RuleOptions,
+    /// Cumulative column-type history across the whole migration set, so rules
+    /// can reason about a column's prior type (e.g. is an `ALTER COLUMN TYPE` a
+    /// safe widening?). Empty unless a caller builds it from every migration.
+    pub migration_columns: MigrationColumns,
 }
 
 /// Per-rule options: `code -> (key -> value)`.
 pub type RuleOptions =
     std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>;
 
+/// What the migration set knows about one column, keyed `"table.column"`
+/// (bare names, lowercased) in [`MigrationColumns`].
+#[derive(Clone, Debug, Default)]
+pub struct MigrationColumn {
+    /// The column's base type at definition (lowercased, no modifier), e.g.
+    /// `"int"`, `"varchar"`. Empty if the definition was not seen.
+    pub original_type: String,
+    /// The declared type text at definition, kept for length comparisons
+    /// (`"varchar(50)"`).
+    pub original_type_text: String,
+    /// How many `ALTER COLUMN … TYPE` statements target this column across the
+    /// whole set. Rules only trust `original_type` when this is exactly 1, so a
+    /// column retyped twice is never mistaken for a one-step widening.
+    pub type_changes: u32,
+}
+
+/// Cumulative column knowledge across a migration set: `"table.column"` →
+/// [`MigrationColumn`]. Built by [`collect_migration_columns`].
+pub type MigrationColumns = std::collections::BTreeMap<String, MigrationColumn>;
+
 /// An empty option set, used when an analyzer is built without options.
 static EMPTY_RULE_OPTIONS: RuleOptions = std::collections::BTreeMap::new();
+
+/// An empty migration-column map, used when no migration set was supplied.
+static EMPTY_MIGRATION_COLUMNS: MigrationColumns = std::collections::BTreeMap::new();
 
 impl AnalysisOptions {
     /// Creates options with default built-in lint packs enabled.
@@ -562,6 +589,12 @@ impl AnalysisOptions {
         self
     }
 
+    /// Attaches cumulative migration column knowledge (see [`MigrationColumns`]).
+    pub fn with_migration_columns(mut self, columns: MigrationColumns) -> Self {
+        self.migration_columns = columns;
+        self
+    }
+
     pub(crate) fn has_builtin_pack(&self, pack: BuiltinLintPack) -> bool {
         self.builtin_lint_packs.contains(&pack)
     }
@@ -582,6 +615,7 @@ impl Clone for AnalysisOptions {
             builtin_lint_packs: self.builtin_lint_packs.clone(),
             external_lint_packs: self.external_lint_packs.clone(),
             rule_options: self.rule_options.clone(),
+            migration_columns: self.migration_columns.clone(),
         }
     }
 }
@@ -592,6 +626,7 @@ impl Default for AnalysisOptions {
             builtin_lint_packs: vec![BuiltinLintPack::Core, BuiltinLintPack::Jsonb],
             external_lint_packs: Vec::new(),
             rule_options: RuleOptions::new(),
+            migration_columns: MigrationColumns::new(),
         }
     }
 }
@@ -865,6 +900,9 @@ pub struct Analyzer<'a> {
 
     /// Per-rule options consulted by config-driven rules.
     rule_options: &'a RuleOptions,
+
+    /// Cumulative migration column knowledge consulted by migration rules.
+    migration_columns: &'a MigrationColumns,
 }
 
 impl<'a> Analyzer<'a> {
@@ -873,6 +911,7 @@ impl<'a> Analyzer<'a> {
         Self {
             provider,
             rule_options: &EMPTY_RULE_OPTIONS,
+            migration_columns: &EMPTY_MIGRATION_COLUMNS,
             diagnostics: Vec::new(),
             resolved_columns: Vec::new(),
             resolved_tables: Vec::new(),
@@ -888,6 +927,17 @@ impl<'a> Analyzer<'a> {
     pub fn with_rule_options(mut self, options: &'a RuleOptions) -> Self {
         self.rule_options = options;
         self
+    }
+
+    /// Attaches cumulative migration column knowledge (consumed by MG rules).
+    pub fn with_migration_columns(mut self, columns: &'a MigrationColumns) -> Self {
+        self.migration_columns = columns;
+        self
+    }
+
+    /// Migration column knowledge for the whole set being analyzed.
+    pub fn migration_columns(&self) -> &'a MigrationColumns {
+        self.migration_columns
     }
 
     /// A scalar option for `code`, e.g. `rule_option("CV11", "prefer")`.
@@ -1368,7 +1418,9 @@ pub fn analyze_query_with_options(
     let overlay = DdlOverlay::new(provider, &root);
     let provider: &dyn SchemaProvider = &overlay;
 
-    let mut analyzer = Analyzer::new(provider).with_rule_options(&options.rule_options);
+    let mut analyzer = Analyzer::new(provider)
+        .with_rule_options(&options.rule_options)
+        .with_migration_columns(&options.migration_columns);
 
     for node in root.descendants() {
         if node.kind() != SyntaxKind::TABLE_REF {

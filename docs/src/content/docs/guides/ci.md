@@ -11,7 +11,7 @@ banshee's repository is itself a composite Action — it installs the binary and
 runs it, with findings shown inline on the PR:
 
 ```yaml
-- uses: octofhir/banshee@v0.2.1
+- uses: octofhir/banshee@v0.2.2
   with:
     command: lint        # or: format
     args: migrations/
@@ -22,7 +22,7 @@ runs it, with findings shown inline on the PR:
 The Action writes a SARIF file for upload to GitHub code scanning:
 
 ```yaml
-- uses: octofhir/banshee@v0.2.1
+- uses: octofhir/banshee@v0.2.2
   with:
     sarif-file: banshee.sarif
 - uses: github/codeql-action/upload-sarif@v3
@@ -38,7 +38,7 @@ binary yourself.
 ```yaml
 repos:
   - repo: https://github.com/octofhir/banshee
-    rev: v0.2.1
+    rev: v0.2.2
     hooks:
       - id: banshee-format
       - id: banshee-lint

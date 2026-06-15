@@ -76,13 +76,14 @@ pub mod scope;
 // Re-export main types
 pub use analyze::{
     Analysis, AnalysisOptions, Analyzer, BREAKING, BuiltinLintPack, ColumnInfo, Diagnostic, Fix,
-    LintRulePack, NullSchemaProvider, RelatedInfo, ResolvedReference, ResolvedTableRef, RuleCode,
-    SchemaProvider, Severity, TableInfo, TableType, TextEdit, analyze_query,
-    analyze_query_with_options, suggest_similar,
+    LintRulePack, MigrationColumn, MigrationColumns, NullSchemaProvider, RelatedInfo,
+    ResolvedReference, ResolvedTableRef, RuleCode, SchemaProvider, Severity, TableInfo, TableType,
+    TextEdit, analyze_query, analyze_query_with_options, suggest_similar,
 };
 pub use binding::{
     ColumnBinding, CteBinding, DataType, Resolution, ResolvedColumn, TableBinding, TableSource,
 };
+pub use lint::collect_migration_columns;
 pub use resolve::{
     ColumnValidation, JsonbChainError, JsonbChainValidation, JsonbChild, JsonbColumnInfo,
     JsonbStructure, JsonbValueType, QualifiedResolution, TableValidation, find_jsonb_columns,
