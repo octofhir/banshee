@@ -100,6 +100,14 @@ pub(crate) fn builtin_rules() -> &'static [&'static dyn Rule] {
         &migration::SetNotNull,
         &migration::PreferIdentity,
         &migration::DropTable,
+        &migration::DropNotNull,
+        &migration::DropDatabase,
+        &migration::ConcurrentIndexInTransaction,
+        &migration::UncommittedTransaction,
+        &migration::TransactionNesting,
+        &migration::RobustStatements,
+        &migration::RequireTableSchema,
+        &migration::IdentifierTooLong,
     ]
 }
 

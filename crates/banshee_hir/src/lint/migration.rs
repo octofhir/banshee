@@ -7,7 +7,11 @@
 //! `MG08` `TRUNCATE … CASCADE` · `MG09` prefer `text` · `MG10` prefer
 //! `timestamptz` · `MG11` prefer `bigint` primary key · `MG12` concurrent
 //! index drop · `MG13` add PK/UNIQUE under lock · `MG14` `SET NOT NULL` ·
-//! `MG15` prefer identity over `serial` · `MG16` drop table.
+//! `MG15` prefer identity over `serial` · `MG16` drop table ·
+//! `MG17` drop `NOT NULL` · `MG18` drop database · `MG19` concurrent index
+//! build inside a transaction · `MG20` uncommitted transaction · `MG21`
+//! transaction nesting · `MG22` non-idempotent (`IF [NOT] EXISTS`) statement ·
+//! `MG23` unqualified table name · `MG24` over-long identifier.
 
 use banshee_syntax::SyntaxKind;
 use banshee_syntax::SyntaxToken;
@@ -714,6 +718,359 @@ impl Rule for DropTable {
                     )
                     .with_code(RuleCode::Mg16)
                     .with_range(stmt.syntax().text_range()),
+                );
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// MG17 — ALTER COLUMN DROP NOT NULL
+// ===========================================================================
+
+/// MG17 — `ALTER COLUMN … DROP NOT NULL` relaxes the column to accept nulls.
+/// Code and clients that assumed the column was always set can break, and the
+/// change is hard to reverse once nulls exist.
+pub(super) struct DropNotNull;
+
+impl Rule for DropNotNull {
+    fn codes(&self) -> &'static [RuleCode] {
+        &[RuleCode::Mg17]
+    }
+    fn group(&self) -> BuiltinLintPack {
+        BuiltinLintPack::Migration
+    }
+    fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        for node in root.descendants() {
+            let Some(action) = AlterTableAction::cast(node.clone()) else {
+                continue;
+            };
+            if action.kind() != AlterActionKind::AlterColumn {
+                continue;
+            }
+            let kinds: Vec<SyntaxKind> = action
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|e| e.into_token())
+                .map(|t| t.kind())
+                .collect();
+            let drops_not_null = kinds.contains(&SyntaxKind::DROP_KW)
+                && kinds.contains(&SyntaxKind::NOT_KW)
+                && kinds.contains(&SyntaxKind::NULL_KW);
+            if drops_not_null {
+                analyzer.emit(
+                    Diagnostic::warning(
+                        "ALTER COLUMN DROP NOT NULL lets nulls into a column clients may assume \
+                         is always set",
+                    )
+                    .with_code(RuleCode::Mg17)
+                    .with_range(action.syntax().text_range()),
+                );
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// MG18 — DROP DATABASE
+// ===========================================================================
+
+/// MG18 — `DROP DATABASE` destroys an entire database. It cannot run inside a
+/// transaction and is almost never something a migration should do.
+pub(super) struct DropDatabase;
+
+impl Rule for DropDatabase {
+    fn codes(&self) -> &'static [RuleCode] {
+        &[RuleCode::Mg18]
+    }
+    fn group(&self) -> BuiltinLintPack {
+        BuiltinLintPack::Migration
+    }
+    fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        for node in root.descendants() {
+            let Some(stmt) = DropStmt::cast(node.clone()) else {
+                continue;
+            };
+            if stmt.object_kind() == Some(SyntaxKind::DATABASE_KW) {
+                analyzer.emit(
+                    Diagnostic::warning(
+                        "DROP DATABASE destroys the whole database and all its data",
+                    )
+                    .with_code(RuleCode::Mg18)
+                    .with_range(stmt.syntax().text_range()),
+                );
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// MG19 — CREATE INDEX CONCURRENTLY inside a transaction
+// ===========================================================================
+
+/// MG19 — `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block;
+/// Postgres rejects it at runtime. Move it out of the `BEGIN`/`COMMIT`.
+pub(super) struct ConcurrentIndexInTransaction;
+
+impl Rule for ConcurrentIndexInTransaction {
+    fn codes(&self) -> &'static [RuleCode] {
+        &[RuleCode::Mg19]
+    }
+    fn group(&self) -> BuiltinLintPack {
+        BuiltinLintPack::Migration
+    }
+    fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        for node in root.descendants() {
+            let Some(stmt) = CreateIndexStmt::cast(node.clone()) else {
+                continue;
+            };
+            if stmt.is_concurrent() && in_open_transaction(stmt.syntax(), root) {
+                analyzer.emit(
+                    Diagnostic::warning(
+                        "CREATE INDEX CONCURRENTLY cannot run inside a transaction block and will \
+                         be rejected by Postgres",
+                    )
+                    .with_code(RuleCode::Mg19)
+                    .with_range(stmt.syntax().text_range()),
+                );
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// MG20 / MG21 — transaction hygiene
+// ===========================================================================
+
+/// Whether a transaction statement opens or closes a transaction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TxnEvent {
+    Open,
+    Close,
+}
+
+/// Top-level transaction statements in source order, classified as open/close.
+fn transaction_events(
+    root: &banshee_syntax::SyntaxNode,
+) -> Vec<(banshee_syntax::SyntaxNode, TxnEvent)> {
+    root.children()
+        .filter(|c| c.kind() == SyntaxKind::TRANSACTION_STMT)
+        .filter_map(|child| {
+            let opener = child
+                .children_with_tokens()
+                .filter_map(|e| e.into_token())
+                .find(|t| t.kind().is_keyword())
+                .map(|t| t.kind());
+            match opener {
+                Some(SyntaxKind::BEGIN_KW | SyntaxKind::START_KW) => {
+                    Some((child.clone(), TxnEvent::Open))
+                }
+                Some(
+                    SyntaxKind::COMMIT_KW
+                    | SyntaxKind::END_KW
+                    | SyntaxKind::ROLLBACK_KW
+                    | SyntaxKind::ABORT_KW,
+                ) => Some((child.clone(), TxnEvent::Close)),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// MG20 — a transaction opened with `BEGIN`/`START` but never matched by a
+/// `COMMIT`/`ROLLBACK` leaves the migration in an open transaction.
+pub(super) struct UncommittedTransaction;
+
+impl Rule for UncommittedTransaction {
+    fn codes(&self) -> &'static [RuleCode] {
+        &[RuleCode::Mg20]
+    }
+    fn group(&self) -> BuiltinLintPack {
+        BuiltinLintPack::Migration
+    }
+    fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        let mut open: Vec<banshee_syntax::SyntaxNode> = Vec::new();
+        for (node, event) in transaction_events(root) {
+            match event {
+                TxnEvent::Open => open.push(node),
+                TxnEvent::Close => {
+                    open.pop();
+                }
+            }
+        }
+        for node in open {
+            analyzer.emit(
+                Diagnostic::warning(
+                    "transaction opened with BEGIN/START is never committed or rolled back",
+                )
+                .with_code(RuleCode::Mg20)
+                .with_range(node.text_range()),
+            );
+        }
+    }
+}
+
+/// MG21 — a `BEGIN`/`START` issued while a transaction is already open. Postgres
+/// ignores the inner `BEGIN` (with a warning) and the matching `COMMIT` ends the
+/// outer transaction early, which is rarely what was intended.
+pub(super) struct TransactionNesting;
+
+impl Rule for TransactionNesting {
+    fn codes(&self) -> &'static [RuleCode] {
+        &[RuleCode::Mg21]
+    }
+    fn group(&self) -> BuiltinLintPack {
+        BuiltinLintPack::Migration
+    }
+    fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        let mut depth = 0i32;
+        for (node, event) in transaction_events(root) {
+            match event {
+                TxnEvent::Open => {
+                    if depth > 0 {
+                        analyzer.emit(
+                            Diagnostic::warning(
+                                "BEGIN/START inside an open transaction nests; Postgres ignores \
+                                 the inner BEGIN and the next COMMIT ends the outer transaction",
+                            )
+                            .with_code(RuleCode::Mg21)
+                            .with_range(node.text_range()),
+                        );
+                    }
+                    depth += 1;
+                }
+                TxnEvent::Close => depth = (depth - 1).max(0),
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// MG22 — non-idempotent statements (prefer IF [NOT] EXISTS)
+// ===========================================================================
+
+/// Whether a statement carries an `IF` keyword (i.e. `IF EXISTS` / `IF NOT
+/// EXISTS`); in these DDL forms `IF` appears only there.
+fn has_if_clause(node: &banshee_syntax::SyntaxNode) -> bool {
+    node.children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .any(|t| t.kind() == SyntaxKind::IF_KW)
+}
+
+/// MG22 — a `CREATE TABLE`, `CREATE INDEX` or `DROP` without `IF [NOT] EXISTS`
+/// fails on re-run, so a migration that partially applied cannot be retried
+/// cleanly. Outside a transaction, prefer the idempotent form. Statements
+/// already inside a transaction roll back atomically, so they are exempt.
+pub(super) struct RobustStatements;
+
+impl Rule for RobustStatements {
+    fn codes(&self) -> &'static [RuleCode] {
+        &[RuleCode::Mg22]
+    }
+    fn group(&self) -> BuiltinLintPack {
+        BuiltinLintPack::Migration
+    }
+    fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        for node in root.descendants() {
+            let (range, what) = match node.kind() {
+                SyntaxKind::CREATE_TABLE_STMT => (node.text_range(), "CREATE TABLE"),
+                SyntaxKind::CREATE_INDEX_STMT => (node.text_range(), "CREATE INDEX"),
+                SyntaxKind::DROP_STMT => (node.text_range(), "DROP"),
+                _ => continue,
+            };
+            if has_if_clause(node) || in_open_transaction(node, root) {
+                continue;
+            }
+            analyzer.emit(
+                Diagnostic::warning(format!(
+                    "{what} without IF [NOT] EXISTS is not idempotent; a re-run after a partial \
+                     failure will error"
+                ))
+                .with_code(RuleCode::Mg22)
+                .with_range(range),
+            );
+        }
+    }
+}
+
+// ===========================================================================
+// MG23 — unqualified table name
+// ===========================================================================
+
+/// MG23 — `CREATE TABLE` without a schema qualifier relies on the session
+/// `search_path`, so the table can land in an unexpected schema. Qualify it
+/// (e.g. `public.t`). Temporary tables are exempt — they cannot be qualified.
+pub(super) struct RequireTableSchema;
+
+impl Rule for RequireTableSchema {
+    fn codes(&self) -> &'static [RuleCode] {
+        &[RuleCode::Mg23]
+    }
+    fn group(&self) -> BuiltinLintPack {
+        BuiltinLintPack::Migration
+    }
+    fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        for node in root.descendants() {
+            let Some(table) = CreateTableStmt::cast(node.clone()) else {
+                continue;
+            };
+            if table.is_temporary() {
+                continue;
+            }
+            let Some(name) = table.name() else { continue };
+            if name.schema().is_none() {
+                analyzer.emit(
+                    Diagnostic::warning(
+                        "CREATE TABLE without a schema qualifier depends on search_path; qualify \
+                         the name (e.g. public.t)",
+                    )
+                    .with_code(RuleCode::Mg23)
+                    .with_range(name.syntax().text_range()),
+                );
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// MG24 — identifier longer than Postgres's 63-byte limit
+// ===========================================================================
+
+/// Postgres `NAMEDATALEN` is 64, so identifiers are limited to 63 bytes.
+const MAX_IDENTIFIER_BYTES: usize = 63;
+
+/// MG24 — an identifier longer than 63 bytes is silently truncated by Postgres,
+/// so two distinct names can collide and a migration can act on the wrong object.
+pub(super) struct IdentifierTooLong;
+
+impl Rule for IdentifierTooLong {
+    fn codes(&self) -> &'static [RuleCode] {
+        &[RuleCode::Mg24]
+    }
+    fn group(&self) -> BuiltinLintPack {
+        BuiltinLintPack::Migration
+    }
+    fn run(&self, root: &banshee_syntax::SyntaxNode, analyzer: &mut Analyzer<'_>) {
+        for token in root
+            .descendants_with_tokens()
+            .filter_map(|e| e.into_token())
+        {
+            let len = match token.kind() {
+                SyntaxKind::IDENT => token.text().len(),
+                // Strip the surrounding double quotes; "" escapes count once each.
+                SyntaxKind::QUOTED_IDENT => {
+                    token.text().trim_matches('"').replace("\"\"", "\"").len()
+                }
+                _ => continue,
+            };
+            if len > MAX_IDENTIFIER_BYTES {
+                analyzer.emit(
+                    Diagnostic::warning(format!(
+                        "identifier is {len} bytes; Postgres truncates names to \
+                         {MAX_IDENTIFIER_BYTES} bytes, which can cause collisions"
+                    ))
+                    .with_code(RuleCode::Mg24)
+                    .with_range(token.text_range()),
                 );
             }
         }

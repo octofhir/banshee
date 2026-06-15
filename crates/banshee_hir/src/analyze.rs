@@ -241,7 +241,37 @@ pub enum RuleCode {
     Mg15,
     /// `DROP TABLE` destroys the table and everything depending on it.
     Mg16,
+    /// `ALTER COLUMN … DROP NOT NULL` lets nulls into a column clients assume is set.
+    Mg17,
+    /// `DROP DATABASE` destroys the whole database and everything in it.
+    Mg18,
+    /// `CREATE INDEX CONCURRENTLY` inside a transaction block is rejected by Postgres.
+    Mg19,
+    /// A transaction opened (`BEGIN`/`START`) without a matching `COMMIT`/`ROLLBACK`.
+    Mg20,
+    /// A `BEGIN`/`START` issued while a transaction is already open.
+    Mg21,
+    /// A `CREATE`/`DROP` that is not idempotent (`IF [NOT] EXISTS` missing).
+    Mg22,
+    /// A `CREATE TABLE` whose name is not schema-qualified.
+    Mg23,
+    /// An identifier longer than Postgres's 63-byte limit (silently truncated).
+    Mg24,
 }
+
+/// Rule codes for backward-incompatible (breaking) schema changes: operations
+/// that drop data, drop objects, or change an existing contract in a way that
+/// breaks deployed clients. Used by `banshee lint --breaking`.
+pub const BREAKING: &[RuleCode] = &[
+    RuleCode::Mg04, // ADD COLUMN NOT NULL without DEFAULT (fails on a non-empty table)
+    RuleCode::Mg05, // DROP COLUMN
+    RuleCode::Mg06, // ALTER COLUMN TYPE
+    RuleCode::Mg07, // RENAME table/column
+    RuleCode::Mg08, // TRUNCATE ... CASCADE
+    RuleCode::Mg16, // DROP TABLE
+    RuleCode::Mg17, // DROP NOT NULL
+    RuleCode::Mg18, // DROP DATABASE
+];
 
 impl RuleCode {
     /// The canonical string form (e.g. `"AM05"`).
@@ -300,12 +330,25 @@ impl RuleCode {
             RuleCode::Mg14 => "MG14",
             RuleCode::Mg15 => "MG15",
             RuleCode::Mg16 => "MG16",
+            RuleCode::Mg17 => "MG17",
+            RuleCode::Mg18 => "MG18",
+            RuleCode::Mg19 => "MG19",
+            RuleCode::Mg20 => "MG20",
+            RuleCode::Mg21 => "MG21",
+            RuleCode::Mg22 => "MG22",
+            RuleCode::Mg23 => "MG23",
+            RuleCode::Mg24 => "MG24",
         }
     }
 
     /// Whether this is a schema-dependent reference check.
     pub fn is_reference(self) -> bool {
         matches!(self, RuleCode::Rf01 | RuleCode::Rf02)
+    }
+
+    /// Whether this rule flags a backward-incompatible (breaking) change.
+    pub fn is_breaking(self) -> bool {
+        BREAKING.contains(&self)
     }
 }
 

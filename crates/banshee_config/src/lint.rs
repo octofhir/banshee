@@ -42,6 +42,9 @@ pub struct LintSettings {
     pub select: Vec<String>,
     /// Rule codes or pack names to exclude, applied after `select`.
     pub exclude: Vec<String>,
+    /// Glob patterns for files to skip entirely (e.g. legacy migrations).
+    /// Matched against each input path; matching files are not analyzed.
+    pub exclude_paths: Vec<String>,
     /// Per-rule configuration keyed by rule code.
     pub rules: BTreeMap<String, RuleSetting>,
 }
@@ -52,6 +55,7 @@ impl Default for LintSettings {
             enabled: true,
             select: Vec::new(),
             exclude: Vec::new(),
+            exclude_paths: Vec::new(),
             rules: BTreeMap::new(),
         }
     }

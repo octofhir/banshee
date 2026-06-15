@@ -24,7 +24,8 @@ layer; the grammar, JSONB/JSONPath support, and lint rules target Postgres.
 - **Correct by construction.** Every statement is cross-checked against
   PostgreSQL's own parser (`libpg_query`) in a differential test.
 - **Postgres-native.** JSONB/JSONPath, plus a squawk-class migration-safety
-  pack (MG01–MG16) that generic SQL tools don't have.
+  pack (MG01–MG24) that generic SQL tools don't have, with a
+  `lint --breaking` gate for backward-incompatible changes.
 - **Fast.** Compiled Rust, no Python or Perl runtime to spin up per file:
 
   | formatter (400-stmt, 60 KB Postgres file) | median | vs banshee |
@@ -69,7 +70,7 @@ leave it off and the binary stays async-free, using a cached schema if present.
 
 ```
 banshee format [--write|--check] [files…|-]
-banshee lint   [--format human|json|github|sarif] [--statistics] [files…|-]
+banshee lint   [--format human|json|github|sarif] [--statistics] [--breaking] [files…|-]
 banshee fix    [--diff] [files…|-]
 banshee parse  [--format tree|json] [files…|-]
 banshee rules [--format human|json] [--group <category|prefix>]   # list lint rules
@@ -96,6 +97,14 @@ echo "select * from a, b" | banshee lint -
 Human output is rendered rustc-style (caret underlines, `help:` hints, colors on
 a TTY). `--format json|github|sarif` is for CI and code-scanning.
 
+`banshee lint --breaking migrations/` is the migration gate: it lints with the
+full rule set but only **backward-incompatible** changes (drop/rename/retype a
+column or table, add a `NOT NULL` column without a default, …) fail the run as
+errors — every other finding stays advisory. One run reports everything and
+blocks on breaking changes. Skip legacy files with `exclude-paths` in
+`banshee.toml`. See the
+[backward-compatible migrations guide](https://octofhir.github.io/banshee/guides/backward-compatible-migrations/).
+
 ## Configuration
 
 Configuration lives in `banshee.toml`, discovered by walking up from the input.
@@ -109,6 +118,7 @@ style = "sqlstyle"        # sqlstyle | pgformatter | compact
 [lint]
 enabled = true
 # exclude = ["AM04"]
+# exclude-paths = ["migrations/2019*.sql"]   # skip legacy files entirely
 # [lint.rules.CP01]
 # severity = "warning"
 
@@ -188,6 +198,14 @@ and `pgformatter`. `style` selects the engine; shared knobs map across both.
 | MG14 | —       | `ALTER COLUMN … SET NOT NULL` scans the table under a lock |
 | MG15 | —       | Prefer `GENERATED … AS IDENTITY` over `serial` |
 | MG16 | —       | `DROP TABLE` destroys the table and its dependents |
+| MG17 | —       | `ALTER COLUMN … DROP NOT NULL` lets nulls into the column |
+| MG18 | —       | `DROP DATABASE` destroys the whole database |
+| MG19 | —       | `CREATE INDEX CONCURRENTLY` cannot run inside a transaction |
+| MG20 | —       | Transaction opened but never committed or rolled back |
+| MG21 | —       | `BEGIN`/`START` issued inside an open transaction |
+| MG22 | —       | `CREATE`/`DROP` without `IF [NOT] EXISTS` is not idempotent |
+| MG23 | —       | `CREATE TABLE` name is not schema-qualified |
+| MG24 | —       | Identifier exceeds Postgres's 63-byte limit |
 
 Prefixes: `AL` aliasing, `AM` ambiguity, `ST` structure, `SF` safety, `JB`
 JSONB, `CV` convention, `CP` capitalisation, `RF` references, `MG` migration
@@ -276,7 +294,7 @@ This repo is itself a GitHub Action — it installs `banshee` and runs it, with
 findings shown inline on the PR (`github` format by default):
 
 ```yaml
-- uses: octofhir/banshee@v0.1.0
+- uses: octofhir/banshee@v0.2.0
   with:
     command: lint        # or: format
     args: migrations/
@@ -285,7 +303,7 @@ findings shown inline on the PR (`github` format by default):
 For code scanning, emit SARIF and upload it; the Action writes the file for you:
 
 ```yaml
-- uses: octofhir/banshee@v0.1.0
+- uses: octofhir/banshee@v0.2.0
   with:
     sarif-file: banshee.sarif
 - uses: github/codeql-action/upload-sarif@v3

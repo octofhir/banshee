@@ -73,6 +73,7 @@ anyhow = { workspace = true }
 annotate-snippets = "0.11"
 text-size = { workspace = true }
 rayon = "1"
+globset = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 
 [dev-dependencies]

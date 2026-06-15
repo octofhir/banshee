@@ -609,6 +609,96 @@ using the table first.
 
   bad:  DROP TABLE t;",
     },
+    RuleDoc {
+        code: "MG17",
+        fixable: false,
+        summary: "ALTER COLUMN DROP NOT NULL lets nulls into the column",
+        explanation: "\
+DROP NOT NULL relaxes a column to accept nulls. Code and clients that relied on
+the column always being set can break, and once nulls exist the change is hard
+to reverse. Treat it as a backward-incompatible change.
+
+  bad:  ALTER TABLE t ALTER COLUMN c DROP NOT NULL;",
+    },
+    RuleDoc {
+        code: "MG18",
+        fixable: false,
+        summary: "DROP DATABASE destroys the whole database",
+        explanation: "\
+DROP DATABASE permanently deletes an entire database and everything in it. It
+cannot run inside a transaction and is almost never something a migration should
+do.
+
+  bad:  DROP DATABASE app;",
+    },
+    RuleDoc {
+        code: "MG19",
+        fixable: false,
+        summary: "CREATE INDEX CONCURRENTLY cannot run inside a transaction",
+        explanation: "\
+CREATE INDEX CONCURRENTLY is rejected by Postgres inside a transaction block.
+Move it out of the BEGIN/COMMIT so the concurrent build can run.
+
+  bad:  BEGIN; CREATE INDEX CONCURRENTLY idx ON t (a); COMMIT;
+  good: CREATE INDEX CONCURRENTLY idx ON t (a);",
+    },
+    RuleDoc {
+        code: "MG20",
+        fixable: false,
+        summary: "Transaction opened but never committed or rolled back",
+        explanation: "\
+A BEGIN/START without a matching COMMIT/ROLLBACK leaves the migration in an open
+transaction. Close every transaction you open.
+
+  bad:  BEGIN; ALTER TABLE t ADD COLUMN c int;
+  good: BEGIN; ALTER TABLE t ADD COLUMN c int; COMMIT;",
+    },
+    RuleDoc {
+        code: "MG21",
+        fixable: false,
+        summary: "BEGIN/START issued inside an open transaction",
+        explanation: "\
+A BEGIN/START while a transaction is already open nests: Postgres ignores the
+inner BEGIN and the next COMMIT ends the outer transaction early, which is
+rarely intended.
+
+  bad:  BEGIN; BEGIN; COMMIT; COMMIT;
+  good: BEGIN; COMMIT;",
+    },
+    RuleDoc {
+        code: "MG22",
+        fixable: false,
+        summary: "CREATE/DROP without IF [NOT] EXISTS is not idempotent",
+        explanation: "\
+A CREATE TABLE/INDEX or DROP without IF [NOT] EXISTS errors on re-run, so a
+migration that partially applied cannot be retried cleanly. Outside a
+transaction, prefer the idempotent form.
+
+  bad:  CREATE TABLE t (a int);
+  good: CREATE TABLE IF NOT EXISTS t (a int);",
+    },
+    RuleDoc {
+        code: "MG23",
+        fixable: false,
+        summary: "CREATE TABLE name is not schema-qualified",
+        explanation: "\
+An unqualified CREATE TABLE relies on the session search_path, so the table can
+land in an unexpected schema. Qualify the name. Temporary tables are exempt.
+
+  bad:  CREATE TABLE t (a int);
+  good: CREATE TABLE public.t (a int);",
+    },
+    RuleDoc {
+        code: "MG24",
+        fixable: false,
+        summary: "Identifier exceeds Postgres's 63-byte limit",
+        explanation: "\
+Postgres truncates identifiers to 63 bytes (NAMEDATALEN - 1). A longer name is
+silently shortened, so two distinct names can collide and a migration can act on
+the wrong object. Use a shorter name.
+
+  bad:  CREATE TABLE this_is_a_really_really_really_really_really_really_really_long_table_name (a int);",
+    },
 ];
 
 /// Looks up a rule by code (case-insensitive).
@@ -648,6 +738,7 @@ pub(crate) fn category(code: &str) -> &'static str {
         "CV" => "convention",
         "CP" => "capitalisation",
         "RF" => "references",
+        "MG" => "migration",
         _ => "other",
     }
 }

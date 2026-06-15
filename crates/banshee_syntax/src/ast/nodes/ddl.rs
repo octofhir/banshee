@@ -473,6 +473,7 @@ impl DropStmt {
                         | SyntaxKind::SCHEMA_KW
                         | SyntaxKind::EXTENSION_KW
                         | SyntaxKind::TYPE_KW
+                        | SyntaxKind::DATABASE_KW
                         | SyntaxKind::MATERIALIZED_KW
                         | SyntaxKind::FUNCTION_KW
                         | SyntaxKind::PROCEDURE_KW

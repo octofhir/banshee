@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project tracks
 the latest stable Rust toolchain.
 
-## [Unreleased]
+## [0.2.0] - 2026-06-15
 
 ### Added
 
@@ -36,9 +36,21 @@ the latest stable Rust toolchain.
   `timestamp` (fixable), MG11 prefer `bigint` for primary keys, MG12
   `DROP INDEX` without `CONCURRENTLY` (fixable), MG13 `ADD PRIMARY KEY`/`UNIQUE`
   built under a lock, MG14 `ALTER COLUMN … SET NOT NULL`, MG15 prefer
-  `GENERATED … AS IDENTITY` over `serial`, MG16 `DROP TABLE` — 51 lint codes
-  total. MG01/MG12 are suppressed inside an explicit transaction block, where
-  `CONCURRENTLY` is not valid.
+  `GENERATED … AS IDENTITY` over `serial`, MG16 `DROP TABLE`. MG01/MG12 are
+  suppressed inside an explicit transaction block, where `CONCURRENTLY` is not
+  valid.
+- **Full squawk parity** in the migration pack: MG17 `ALTER COLUMN … DROP
+  NOT NULL`, MG18 `DROP DATABASE`, MG19 `CREATE INDEX CONCURRENTLY` inside a
+  transaction, MG20 uncommitted transaction, MG21 transaction nesting, MG22
+  non-idempotent statement (missing `IF [NOT] EXISTS`), MG23 unqualified
+  `CREATE TABLE` name, MG24 over-long identifier — 24 migration codes.
+- **Backward-incompatibility gate**: `banshee lint --breaking <path>` lints a
+  whole migrations directory with the full rule set but fails only on
+  backward-incompatible changes (MG04/MG05/MG06/MG07/MG08/MG16/MG17/MG18, raised
+  to errors); all other findings stay advisory, so one run both reports the pack
+  and gates the merge. The run fails on any error-severity finding, so rules
+  promoted to `error` in config gate alongside it. Legacy files are skipped with
+  the new `[lint] exclude-paths` glob list.
 - **DDL typed AST and analysis** (`banshee_syntax`, `banshee_hir`): typed accessors
   for the DDL and command statements; analysis resolves tables and columns
   defined by `CREATE TABLE`/`CREATE VIEW` in the same source and no longer

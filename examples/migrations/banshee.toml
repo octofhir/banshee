@@ -1,0 +1,7 @@
+# Config for the `just demo-breaking` example migrations directory.
+[lint]
+# Keep the demo focused on migration safety, not keyword casing.
+exclude = ["CP01", "CP02"]
+# Legacy migrations predate the no-breaking-changes policy: freeze them so the
+# gate never flags their (already-merged) breaking changes.
+exclude-paths = ["**/legacy/**"]

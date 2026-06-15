@@ -64,6 +64,12 @@ parse-sql sql:
 rules:
     cargo run -p banshee --quiet -- rules
 
+# Run the backward-incompatibility gate over the example migrations directory.
+# Breaking changes (0003/0004) are reported as errors and set exit 1; other
+# findings stay advisory; the frozen legacy/ file is skipped via exclude-paths.
+demo-breaking:
+    cargo run -p banshee --quiet -- --config examples/migrations/banshee.toml lint --breaking examples/migrations || true
+
 # Run the language server over stdio (with live schema support)
 lsp:
     cargo run -p banshee --features db -- lsp

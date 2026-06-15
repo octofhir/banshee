@@ -31,6 +31,9 @@ style = "sqlstyle"        # sqlstyle (river alignment) | pgformatter | compact
 [lint]
 enabled = true
 # exclude = ["AM04"]
+# exclude-paths = ["migrations/2019*.sql", "migrations/legacy/**"]
+#                          # globs of files to skip entirely (e.g. legacy
+#                          # migrations); also honoured by `lint --breaking`
 
 # Per-rule options (each rule reads its own keys):
 # [lint.rules.CV04]

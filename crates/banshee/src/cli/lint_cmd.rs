@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use banshee_hir::{Diagnostic, Severity};
+use banshee_config::SeverityLevel;
+use banshee_hir::{BREAKING, Diagnostic, Severity};
 use clap::Args;
 use rayon::prelude::*;
 
@@ -26,11 +27,23 @@ pub struct LintArgs {
     /// Print a per-rule count breakdown after the findings.
     #[arg(long)]
     statistics: bool,
+
+    /// Treat backward-incompatible (breaking) changes as errors that fail the
+    /// run, while every other rule stays advisory (reported, but does not affect
+    /// the exit code). One run lints the whole pack and gates on breaking
+    /// changes — no second invocation needed. Combine with `exclude-paths` to
+    /// skip legacy files.
+    #[arg(long)]
+    breaking: bool,
 }
 
 pub fn run(args: &LintArgs, cli: &Cli) -> Result<u8> {
-    let config = cli.load_config(&io::discovery_anchor(&args.paths))?;
+    let mut config = cli.load_config(&io::discovery_anchor(&args.paths))?;
+    if args.breaking {
+        escalate_breaking(&mut config);
+    }
     let inputs = gather_inputs(&args.paths)?;
+    let inputs = io::apply_exclude_paths(inputs, &config.lint.exclude_paths)?;
     let provider = super::schema::resolve(&config)?;
     let provider_ref = provider
         .as_ref()
@@ -43,6 +56,11 @@ pub fn run(args: &LintArgs, cli: &Cli) -> Result<u8> {
         .map(|input| super::analysis::analyze(&input.text, &config, provider_ref).diagnostics)
         .collect();
     let total: usize = per_file.iter().map(Vec::len).sum();
+    let errors = per_file
+        .iter()
+        .flatten()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
 
     let color = cli.use_color();
     if matches!(args.format, ReportFormat::Sarif) {
@@ -65,7 +83,29 @@ pub fn run(args: &LintArgs, cli: &Cli) -> Result<u8> {
         }
     }
 
-    Ok(if total > 0 { exit::FINDINGS } else { exit::OK })
+    // `--breaking` is a gate: only error-severity findings (the breaking changes)
+    // fail the run, so the rest of the lint pack stays advisory and a single
+    // invocation both reports everything and blocks on breaking changes. The
+    // default contract is unchanged: any finding fails.
+    let fail = if args.breaking { errors > 0 } else { total > 0 };
+    Ok(if fail { exit::FINDINGS } else { exit::OK })
+}
+
+/// Raises the breaking-change rules to error severity (and force-enables them so
+/// a project `exclude`/per-rule toggle cannot hide them). Every other rule keeps
+/// its configured selection and severity, so one `lint --breaking` run reports
+/// the full pack while only breaking changes fail the run.
+fn escalate_breaking(config: &mut banshee_config::BansheeConfig) {
+    config.lint.enabled = true;
+    for code in BREAKING {
+        let setting = config
+            .lint
+            .rules
+            .entry(code.as_str().to_string())
+            .or_default();
+        setting.enabled = Some(true);
+        setting.severity = Some(SeverityLevel::Error);
+    }
 }
 
 fn report(format: ReportFormat, input: &InputFile, diags: &[Diagnostic], color: bool) {

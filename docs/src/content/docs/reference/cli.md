@@ -5,7 +5,7 @@ description: Every banshee subcommand and flag.
 
 ```text
 banshee format [--write|--check] [files…|-]
-banshee lint   [--format human|json|github|sarif] [--statistics] [files…|-]
+banshee lint   [--format human|json|github|sarif] [--statistics] [--breaking] [files…|-]
 banshee fix    [--diff] [files…|-]
 banshee parse  [--format tree|json] [files…|-]
 banshee rules  [--format human|json] [--group <category|prefix>]
@@ -27,7 +27,10 @@ Inputs are files, directories (walked for `*.sql`), or stdin (`-`).
   `1` if anything is unformatted.
 - **`lint`** — report findings. `--format` selects `human` / `json` / `github`
   (PR annotations) / `sarif` (code scanning); `--statistics` prints a per-rule
-  count breakdown.
+  count breakdown. `--breaking` runs the full pack but fails only on
+  backward-incompatible changes (raised to errors); other findings stay
+  advisory — the migration gate in one run; see
+  [backward-compatible migrations](/banshee/guides/backward-compatible-migrations/).
 - **`fix`** — apply every available autofix. `--diff` previews instead of writing.
 - **`parse`** — print the concrete syntax tree (`--format tree|json`).
 - **`rules`** — list lint rules; `--group` filters by category or prefix.

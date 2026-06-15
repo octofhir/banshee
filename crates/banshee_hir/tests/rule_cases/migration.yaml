@@ -79,6 +79,18 @@
   rule: MG05
   fail: "ALTER TABLE t DROP COLUMN c;"
 
+- name: drop_column_if_exists_flagged
+  rule: MG05
+  fail: "ALTER TABLE t DROP COLUMN IF EXISTS c;"
+
+- name: drop_column_cascade_flagged
+  rule: MG05
+  fail: "ALTER TABLE t DROP COLUMN c CASCADE;"
+
+- name: drop_column_schema_qualified_flagged
+  rule: MG05
+  fail: "ALTER TABLE public.t DROP COLUMN c;"
+
 - name: add_column_not_drop_ok
   rule: MG05
   pass: "ALTER TABLE t ADD COLUMN c int;"
@@ -87,6 +99,14 @@
 - name: alter_column_type_flagged
   rule: MG06
   fail: "ALTER TABLE t ALTER COLUMN c TYPE bigint;"
+
+- name: alter_column_type_using_flagged
+  rule: MG06
+  fail: "ALTER TABLE t ALTER COLUMN c TYPE bigint USING c::bigint;"
+
+- name: alter_column_set_type_flagged
+  rule: MG06
+  fail: "ALTER TABLE t ALTER COLUMN c SET DATA TYPE text;"
 
 - name: alter_column_default_not_flagged
   rule: MG06
@@ -101,6 +121,14 @@
   rule: MG07
   fail: "ALTER TABLE t RENAME COLUMN a TO b;"
 
+- name: rename_column_implicit_flagged
+  rule: MG07
+  fail: "ALTER TABLE t RENAME a TO b;"
+
+- name: rename_constraint_flagged
+  rule: MG07
+  fail: "ALTER TABLE t RENAME CONSTRAINT a TO b;"
+
 - name: alter_add_column_not_rename
   rule: MG07
   pass: "ALTER TABLE t ADD COLUMN c int;"
@@ -109,6 +137,14 @@
 - name: truncate_cascade_flagged
   rule: MG08
   fail: "TRUNCATE t CASCADE;"
+
+- name: truncate_multiple_cascade_flagged
+  rule: MG08
+  fail: "TRUNCATE a, b CASCADE;"
+
+- name: truncate_table_keyword_cascade_flagged
+  rule: MG08
+  fail: "TRUNCATE TABLE t CASCADE;"
 
 - name: truncate_plain_ok
   rule: MG08
@@ -230,6 +266,122 @@
   rule: MG16
   fail: "DROP TABLE t;"
 
+- name: drop_table_if_exists_flagged
+  rule: MG16
+  fail: "DROP TABLE IF EXISTS t;"
+
+- name: drop_table_multiple_flagged
+  rule: MG16
+  fail: "DROP TABLE a, b CASCADE;"
+
 - name: drop_index_not_flagged_mg16
   rule: MG16
   pass: "DROP INDEX i;"
+
+# MG17 — ALTER COLUMN DROP NOT NULL
+- name: drop_not_null_flagged
+  rule: MG17
+  fail: "ALTER TABLE t ALTER COLUMN c DROP NOT NULL;"
+
+- name: drop_not_null_schema_qualified_flagged
+  rule: MG17
+  fail: "ALTER TABLE public.t ALTER COLUMN c DROP NOT NULL;"
+
+- name: set_not_null_not_flagged_mg17
+  rule: MG17
+  pass: "ALTER TABLE t ALTER COLUMN c SET NOT NULL;"
+
+- name: drop_default_not_flagged_mg17
+  rule: MG17
+  pass: "ALTER TABLE t ALTER COLUMN c DROP DEFAULT;"
+
+# MG18 — DROP DATABASE
+- name: drop_database_flagged
+  rule: MG18
+  fail: "DROP DATABASE app;"
+
+- name: drop_database_if_exists_flagged
+  rule: MG18
+  fail: "DROP DATABASE IF EXISTS app;"
+
+- name: drop_table_not_flagged_mg18
+  rule: MG18
+  pass: "DROP TABLE t;"
+
+# MG19 — CREATE INDEX CONCURRENTLY inside a transaction
+- name: concurrent_index_in_transaction_flagged
+  rule: MG19
+  fail: "BEGIN; CREATE INDEX CONCURRENTLY idx ON t (a); COMMIT;"
+
+- name: concurrent_index_outside_transaction_ok
+  rule: MG19
+  pass: "CREATE INDEX CONCURRENTLY idx ON t (a);"
+
+- name: plain_index_in_transaction_not_flagged_mg19
+  rule: MG19
+  pass: "BEGIN; CREATE INDEX idx ON t (a); COMMIT;"
+
+# MG20 — uncommitted transaction
+- name: uncommitted_begin_flagged
+  rule: MG20
+  fail: "BEGIN; ALTER TABLE t ADD COLUMN c int;"
+
+- name: committed_transaction_ok
+  rule: MG20
+  pass: "BEGIN; ALTER TABLE t ADD COLUMN c int; COMMIT;"
+
+- name: rolled_back_transaction_ok
+  rule: MG20
+  pass: "BEGIN; ALTER TABLE t ADD COLUMN c int; ROLLBACK;"
+
+# MG21 — transaction nesting
+- name: nested_begin_flagged
+  rule: MG21
+  fail: "BEGIN; BEGIN; COMMIT; COMMIT;"
+
+- name: sequential_transactions_ok
+  rule: MG21
+  pass: "BEGIN; COMMIT; BEGIN; COMMIT;"
+
+# MG22 — non-idempotent statements (prefer IF [NOT] EXISTS)
+- name: create_table_without_if_not_exists_flagged
+  rule: MG22
+  fail: "CREATE TABLE t (a int);"
+
+- name: create_table_if_not_exists_ok
+  rule: MG22
+  pass: "CREATE TABLE IF NOT EXISTS t (a int);"
+
+- name: drop_table_without_if_exists_flagged
+  rule: MG22
+  fail: "DROP TABLE t;"
+
+- name: drop_table_if_exists_ok
+  rule: MG22
+  pass: "DROP TABLE IF EXISTS t;"
+
+- name: create_table_in_transaction_ok_mg22
+  rule: MG22
+  pass: "BEGIN; CREATE TABLE t (a int); COMMIT;"
+
+# MG23 — unqualified table name
+- name: unqualified_create_table_flagged
+  rule: MG23
+  fail: "CREATE TABLE t (a int);"
+
+- name: qualified_create_table_ok
+  rule: MG23
+  pass: "CREATE TABLE public.t (a int);"
+
+- name: temp_table_not_flagged_mg23
+  rule: MG23
+  pass: "CREATE TEMP TABLE t (a int);"
+
+# MG24 — identifier longer than 63 bytes
+- name: long_identifier_flagged
+  rule: MG24
+  fail: "CREATE TABLE this_is_a_really_really_really_really_really_really_really_long_table_name (a int);"
+
+- name: short_identifier_ok
+  rule: MG24
+  pass: "CREATE TABLE t (a int);"

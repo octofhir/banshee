@@ -45,6 +45,31 @@ pub fn gather_inputs(paths: &[PathBuf]) -> Result<Vec<InputFile>> {
     Ok(inputs)
 }
 
+/// Drops inputs whose path matches any `exclude-paths` glob (e.g. legacy
+/// migrations). stdin and other path-less inputs are always kept. Returns an
+/// error if a pattern is not a valid glob.
+pub fn apply_exclude_paths(inputs: Vec<InputFile>, patterns: &[String]) -> Result<Vec<InputFile>> {
+    if patterns.is_empty() {
+        return Ok(inputs);
+    }
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in patterns {
+        let glob = globset::Glob::new(pattern)
+            .with_context(|| format!("invalid exclude-paths glob: {pattern}"))?;
+        builder.add(glob);
+    }
+    let set = builder
+        .build()
+        .context("failed to build the exclude-paths matcher")?;
+    Ok(inputs
+        .into_iter()
+        .filter(|input| match &input.path {
+            Some(path) => !set.is_match(path),
+            None => true,
+        })
+        .collect())
+}
+
 /// The directory a path lives in, for config discovery; falls back to cwd.
 pub fn discovery_anchor(paths: &[PathBuf]) -> PathBuf {
     paths
