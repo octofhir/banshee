@@ -36,6 +36,30 @@
   rule: CP01
   pass: "SELECT id FROM users;"
 
+# Unreserved keyword used as a column name must not be nagged as a keyword.
+- name: unreserved_kw_as_column_name_ok
+  rule: CP01
+  pass: "CREATE TABLE t (type TEXT NOT NULL, value INT);"
+
+- name: qualified_kw_column_ok
+  rule: CP01
+  pass: "COMMENT ON COLUMN bank_transaction.type IS 'x';"
+
+# Contextual keywords banshee lexes as identifiers must not be flagged as
+# mis-cased identifiers (CP02).
+- name: trigger_contextual_keywords_ok
+  rule: CP02
+  pass: "CREATE TRIGGER x BEFORE UPDATE ON t FOR EACH ROW EXECUTE PROCEDURE f();"
+
+- name: enum_value_keywords_ok
+  rule: CP02
+  pass: "ALTER TYPE my_enum ADD VALUE 'BILLING_IN_TIPS';"
+
+# A genuine CamelCase identifier is still flagged by CP02.
+- name: camelcase_identifier_flagged
+  rule: CP02
+  fail: "SELECT fooBar FROM t;"
+
 - name: jsonb_text_comparison_flagged_and_fixed
   rule: JB01
   fail: "SELECT id FROM t WHERE data -> 'k' = 'v'"

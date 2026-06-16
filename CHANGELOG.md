@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project tracks
 the latest stable Rust toolchain.
 
+## [0.2.3] - 2026-06-16
+
+### Fixed
+
+- **No more panic on multi-byte SQL.** `lint`/`parse` no longer panic when an
+  error snippet is truncated mid-character (e.g. Cyrillic string literals);
+  truncation now snaps to a UTF-8 char boundary.
+
+### Added
+
+- **Wider PostgreSQL grammar coverage**, verified against `libpg_query`:
+  - Unreserved keywords usable as identifiers (PostgreSQL's `ColId`), so
+    `type`, `value`, `source`, etc. can name columns and objects.
+  - `REPLACE(...)` and the niladic special functions `CURRENT_DATE`,
+    `CURRENT_TIME`, `CURRENT_TIMESTAMP`, `CURRENT_USER`, `SESSION_USER`,
+    `LOCALTIME`, `LOCALTIMESTAMP` (with optional precision) as expressions.
+  - `INSERT … OVERRIDING { SYSTEM | USER } VALUE`.
+  - `ALTER TYPE … ADD VALUE / RENAME / OWNER`.
+  - `UNIQUE NULLS [NOT] DISTINCT` in table and column constraints.
+
+### Changed
+
+- **Capitalisation lints (CP01/CP02) are role-aware.** Contextual keywords that
+  banshee lexes as identifiers (`EACH`, `BEFORE`, `EXECUTE`, `ENUM`, `VALUE`, …)
+  are no longer mis-flagged as identifiers, and keyword-spelled identifiers used
+  as qualified-name components (e.g. `table.type`) are no longer flagged as
+  keywords. Backed by the full PostgreSQL keyword list.
+
 ## [0.2.2] - 2026-06-15
 
 ### Changed

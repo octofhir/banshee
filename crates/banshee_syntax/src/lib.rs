@@ -21,7 +21,7 @@
 pub mod ast;
 mod syntax_kind;
 
-pub use syntax_kind::{SyntaxKind, keyword_from_str};
+pub use syntax_kind::{SyntaxKind, is_postgres_keyword, keyword_from_str};
 
 use cstree::{
     green::GreenNode,

@@ -5,7 +5,7 @@ use banshee_syntax::SyntaxKind;
 
 use super::PAREN_RECOVERY;
 use super::expressions::expr;
-use super::select::{at_ident, expect_ident, select_stmt, with_clause};
+use super::select::{at_ident, at_ident_text, expect_ident, select_stmt, with_clause};
 
 /// Parse INSERT statement.
 ///
@@ -42,8 +42,8 @@ pub fn insert_stmt(p: &mut Parser<'_>) {
                 | SyntaxKind::WITH_KW
         )
     {
-        // Check if this is an alias (not a keyword)
-        if !is_insert_keyword(p.current()) {
+        // Check if this is an alias (not a keyword, and not the OVERRIDING clause)
+        if !is_insert_keyword(p.current()) && !at_ident_text(p, "OVERRIDING") {
             p.bump();
         }
     }
@@ -51,6 +51,11 @@ pub fn insert_stmt(p: &mut Parser<'_>) {
     // Optional column list
     if p.at(SyntaxKind::L_PAREN) && !is_subquery_start(p) {
         column_list(p);
+    }
+
+    // Optional OVERRIDING { SYSTEM | USER } VALUE clause
+    if at_ident_text(p, "OVERRIDING") {
+        overriding_clause(p);
     }
 
     // Values source: VALUES, SELECT, or DEFAULT VALUES
@@ -274,6 +279,24 @@ fn is_subquery_start(p: &Parser<'_>) -> bool {
     }
     // Look ahead to see if this is (SELECT ...) or (WITH ...)
     p.nth(1) == SyntaxKind::SELECT_KW || p.nth(1) == SyntaxKind::WITH_KW
+}
+
+/// `OVERRIDING { SYSTEM | USER } VALUE` — controls identity-column overrides.
+/// None of these words are reserved keywords, so they are matched by text.
+fn overriding_clause(p: &mut Parser<'_>) {
+    let m = p.start();
+    p.bump(); // OVERRIDING
+    if at_ident_text(p, "SYSTEM") || at_ident_text(p, "USER") {
+        p.bump();
+    } else {
+        p.error("expected SYSTEM or USER after OVERRIDING".to_string());
+    }
+    if at_ident_text(p, "VALUE") {
+        p.bump();
+    } else {
+        p.error("expected VALUE after OVERRIDING SYSTEM/USER".to_string());
+    }
+    m.complete(p, SyntaxKind::OVERRIDING_CLAUSE);
 }
 
 fn is_insert_keyword(kind: SyntaxKind) -> bool {

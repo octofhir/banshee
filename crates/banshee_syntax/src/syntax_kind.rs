@@ -559,6 +559,7 @@ pub enum SyntaxKind {
 
     // INSERT specifics
     INSERT_COLUMNS,
+    OVERRIDING_CLAUSE,
     VALUES_CLAUSE,
     VALUES_ROW,
     ON_CONFLICT_CLAUSE,
@@ -609,6 +610,115 @@ impl SyntaxKind {
     pub fn is_keyword(self) -> bool {
         let v = self as u32;
         v >= SyntaxKind::ABS_KW as u32 && v <= SyntaxKind::ZONE_KW as u32
+    }
+
+    /// True for keywords PostgreSQL classifies as *reserved* (including the
+    /// "reserved (can be function or type name)" category). These cannot be used
+    /// as plain identifiers. Every other keyword is usable as a `ColId`, matching
+    /// PostgreSQL's unreserved + column-name keyword categories.
+    pub fn is_reserved_keyword(self) -> bool {
+        matches!(
+            self,
+            // --- fully reserved ---
+            SyntaxKind::ALL_KW
+                | SyntaxKind::AND_KW
+                | SyntaxKind::ANY_KW
+                | SyntaxKind::ARRAY_KW
+                | SyntaxKind::AS_KW
+                | SyntaxKind::ASC_KW
+                | SyntaxKind::ASYMMETRIC_KW
+                | SyntaxKind::BOTH_KW
+                | SyntaxKind::CASE_KW
+                | SyntaxKind::CAST_KW
+                | SyntaxKind::CHECK_KW
+                | SyntaxKind::COLLATE_KW
+                | SyntaxKind::COLUMN_KW
+                | SyntaxKind::CONSTRAINT_KW
+                | SyntaxKind::CREATE_KW
+                | SyntaxKind::CURRENT_DATE_KW
+                | SyntaxKind::CURRENT_TIME_KW
+                | SyntaxKind::CURRENT_TIMESTAMP_KW
+                | SyntaxKind::CURRENT_USER_KW
+                | SyntaxKind::DEFAULT_KW
+                | SyntaxKind::DEFERRABLE_KW
+                | SyntaxKind::DESC_KW
+                | SyntaxKind::DISTINCT_KW
+                | SyntaxKind::DO_KW
+                | SyntaxKind::ELSE_KW
+                | SyntaxKind::END_KW
+                | SyntaxKind::EXCEPT_KW
+                | SyntaxKind::FALSE_KW
+                | SyntaxKind::FETCH_KW
+                | SyntaxKind::FOR_KW
+                | SyntaxKind::FOREIGN_KW
+                | SyntaxKind::FROM_KW
+                | SyntaxKind::GRANT_KW
+                | SyntaxKind::GROUP_KW
+                | SyntaxKind::HAVING_KW
+                | SyntaxKind::IN_KW
+                | SyntaxKind::INITIALLY_KW
+                | SyntaxKind::INTERSECT_KW
+                | SyntaxKind::INTO_KW
+                | SyntaxKind::LATERAL_KW
+                | SyntaxKind::LEADING_KW
+                | SyntaxKind::LIMIT_KW
+                | SyntaxKind::LOCALTIME_KW
+                | SyntaxKind::LOCALTIMESTAMP_KW
+                | SyntaxKind::NOT_KW
+                | SyntaxKind::NULL_KW
+                | SyntaxKind::OFFSET_KW
+                | SyntaxKind::ON_KW
+                | SyntaxKind::ONLY_KW
+                | SyntaxKind::OR_KW
+                | SyntaxKind::ORDER_KW
+                | SyntaxKind::PLACING_KW
+                | SyntaxKind::PRIMARY_KW
+                | SyntaxKind::REFERENCES_KW
+                | SyntaxKind::RETURNING_KW
+                | SyntaxKind::SELECT_KW
+                | SyntaxKind::SESSION_USER_KW
+                | SyntaxKind::SOME_KW
+                | SyntaxKind::SYMMETRIC_KW
+                | SyntaxKind::TABLE_KW
+                | SyntaxKind::THEN_KW
+                | SyntaxKind::TO_KW
+                | SyntaxKind::TRAILING_KW
+                | SyntaxKind::TRUE_KW
+                | SyntaxKind::UNION_KW
+                | SyntaxKind::UNIQUE_KW
+                | SyntaxKind::USING_KW
+                | SyntaxKind::VARIADIC_KW
+                | SyntaxKind::WHEN_KW
+                | SyntaxKind::WHERE_KW
+                | SyntaxKind::WINDOW_KW
+                | SyntaxKind::WITH_KW
+                // --- reserved (can be function or type name) ---
+                | SyntaxKind::AUTHORIZATION_KW
+                | SyntaxKind::BINARY_KW
+                | SyntaxKind::CONCURRENTLY_KW
+                | SyntaxKind::CROSS_KW
+                | SyntaxKind::FULL_KW
+                | SyntaxKind::ILIKE_KW
+                | SyntaxKind::INNER_KW
+                | SyntaxKind::IS_KW
+                | SyntaxKind::ISNULL_KW
+                | SyntaxKind::JOIN_KW
+                | SyntaxKind::LEFT_KW
+                | SyntaxKind::LIKE_KW
+                | SyntaxKind::NATURAL_KW
+                | SyntaxKind::NOTNULL_KW
+                | SyntaxKind::OUTER_KW
+                | SyntaxKind::OVERLAPS_KW
+                | SyntaxKind::RIGHT_KW
+                | SyntaxKind::SIMILAR_KW
+        )
+    }
+
+    /// True when this token can stand in for an identifier (`ColId`): a real
+    /// identifier, a quoted identifier, or any non-reserved keyword.
+    pub fn can_be_identifier(self) -> bool {
+        matches!(self, SyntaxKind::IDENT | SyntaxKind::QUOTED_IDENT)
+            || (self.is_keyword() && !self.is_reserved_keyword())
     }
 
     pub fn is_jsonb_operator(self) -> bool {
@@ -722,6 +832,86 @@ pub fn keyword_from_str(s: &str) -> Option<SyntaxKind> {
     let upper = s.to_ascii_uppercase();
     KEYWORD_MAP.get(upper.as_str()).copied()
 }
+
+/// True when `s` is any PostgreSQL keyword (reserved or unreserved), regardless
+/// of whether banshee's grammar tracks it as a distinct token. Used by lints to
+/// recognise contextual keywords (e.g. `EACH`, `BEFORE`, `VALUE`) that banshee
+/// lexes as identifiers, so they are not mistaken for user identifiers.
+pub fn is_postgres_keyword(s: &str) -> bool {
+    let upper = s.to_ascii_uppercase();
+    PG_KEYWORDS.contains(upper.as_str())
+}
+
+/// The full PostgreSQL keyword list (kwlist.h), independent of banshee's own
+/// token set. Kept as plain text because lints reason about token text, not kind.
+static PG_KEYWORDS: phf::Set<&'static str> = phf::phf_set! {
+    "ABORT", "ABSENT", "ABSOLUTE", "ACCESS", "ACTION", "ADD", "ADMIN", "AFTER",
+    "AGGREGATE", "ALL", "ALSO", "ALTER", "ALWAYS", "ANALYSE", "ANALYZE", "AND",
+    "ANY", "ARRAY", "AS", "ASC", "ASENSITIVE", "ASSERTION", "ASSIGNMENT",
+    "ASYMMETRIC", "AT", "ATOMIC", "ATTACH", "ATTRIBUTE", "AUTHORIZATION",
+    "BACKWARD", "BEFORE", "BEGIN", "BETWEEN", "BIGINT", "BINARY", "BIT",
+    "BOOLEAN", "BOTH", "BREADTH", "BY", "CACHE", "CALL", "CALLED", "CASCADE",
+    "CASCADED", "CASE", "CAST", "CATALOG", "CHAIN", "CHAR", "CHARACTER",
+    "CHARACTERISTICS", "CHECK", "CHECKPOINT", "CLASS", "CLOSE", "CLUSTER",
+    "COALESCE", "COLLATE", "COLLATION", "COLUMN", "COLUMNS", "COMMENT",
+    "COMMENTS", "COMMIT", "COMMITTED", "COMPRESSION", "CONCURRENTLY",
+    "CONFIGURATION", "CONFLICT", "CONNECTION", "CONSTRAINT", "CONSTRAINTS",
+    "CONTENT", "CONTINUE", "CONVERSION", "COPY", "COST", "CREATE", "CROSS",
+    "CSV", "CUBE", "CURRENT", "CURRENT_CATALOG", "CURRENT_DATE", "CURRENT_ROLE",
+    "CURRENT_SCHEMA", "CURRENT_TIME", "CURRENT_TIMESTAMP", "CURRENT_USER",
+    "CURSOR", "CYCLE", "DATA", "DATABASE", "DAY", "DEALLOCATE", "DEC", "DECIMAL",
+    "DECLARE", "DEFAULT", "DEFAULTS", "DEFERRABLE", "DEFERRED", "DEFINER",
+    "DELETE", "DELIMITER", "DELIMITERS", "DEPENDS", "DEPTH", "DESC", "DETACH",
+    "DICTIONARY", "DISABLE", "DISCARD", "DISTINCT", "DO", "DOCUMENT", "DOMAIN",
+    "DOUBLE", "DROP", "EACH", "ELSE", "ENABLE", "ENCODING", "ENCRYPTED", "END",
+    "ENUM", "ESCAPE", "EVENT", "EXCEPT", "EXCLUDE", "EXCLUDING", "EXCLUSIVE",
+    "EXECUTE", "EXISTS", "EXPLAIN", "EXPRESSION", "EXTENSION", "EXTERNAL",
+    "EXTRACT", "FALSE", "FAMILY", "FETCH", "FILTER", "FINALIZE", "FIRST",
+    "FLOAT", "FOLLOWING", "FOR", "FORCE", "FOREIGN", "FORWARD", "FREEZE", "FROM",
+    "FULL", "FUNCTION", "FUNCTIONS", "GENERATED", "GLOBAL", "GRANT", "GRANTED",
+    "GREATEST", "GROUP", "GROUPING", "GROUPS", "HANDLER", "HAVING", "HEADER",
+    "HOLD", "HOUR", "IDENTITY", "IF", "ILIKE", "IMMEDIATE", "IMMUTABLE",
+    "IMPLICIT", "IMPORT", "IN", "INCLUDE", "INCLUDING", "INCREMENT", "INDENT",
+    "INDEX", "INDEXES", "INHERIT", "INHERITS", "INITIALLY", "INLINE", "INNER",
+    "INOUT", "INPUT", "INSENSITIVE", "INSERT", "INSTEAD", "INT", "INTEGER",
+    "INTERSECT", "INTERVAL", "INTO", "INVOKER", "IS", "ISNULL", "ISOLATION",
+    "JOIN", "JSON", "JSON_ARRAY", "JSON_ARRAYAGG", "JSON_OBJECT",
+    "JSON_OBJECTAGG", "KEY", "KEYS", "LABEL", "LANGUAGE", "LARGE", "LAST",
+    "LATERAL", "LEADING", "LEAKPROOF", "LEAST", "LEFT", "LEVEL", "LIKE", "LIMIT",
+    "LISTEN", "LOAD", "LOCAL", "LOCALTIME", "LOCALTIMESTAMP", "LOCATION", "LOCK",
+    "LOCKED", "LOGGED", "MAPPING", "MATCH", "MATCHED", "MATERIALIZED", "MAXVALUE",
+    "MERGE", "METHOD", "MINUTE", "MINVALUE", "MODE", "MONTH", "MOVE", "NAME",
+    "NAMES", "NATIONAL", "NATURAL", "NCHAR", "NEW", "NEXT", "NFC", "NFD", "NFKC",
+    "NFKD", "NO", "NONE", "NORMALIZE", "NORMALIZED", "NOT", "NOTHING", "NOTIFY",
+    "NOTNULL", "NOWAIT", "NULL", "NULLIF", "NULLS", "NUMERIC", "OBJECT", "OF",
+    "OFF", "OFFSET", "OIDS", "OLD", "ON", "ONLY", "OPERATOR", "OPTION",
+    "OPTIONS", "OR", "ORDER", "ORDINALITY", "OTHERS", "OUT", "OUTER", "OVER",
+    "OVERLAPS", "OVERLAY", "OVERRIDING", "OWNED", "OWNER", "PARALLEL",
+    "PARAMETER", "PARSER", "PARTIAL", "PARTITION", "PASSING", "PASSWORD",
+    "PLACING", "PLANS", "POLICY", "POSITION", "PRECEDING", "PRECISION",
+    "PREPARE", "PREPARED", "PRESERVE", "PRIMARY", "PRIOR", "PRIVILEGES",
+    "PROCEDURAL", "PROCEDURE", "PROCEDURES", "PROGRAM", "PUBLICATION", "QUOTE",
+    "RANGE", "READ", "REAL", "REASSIGN", "RECHECK", "RECURSIVE", "REF",
+    "REFERENCES", "REFERENCING", "REFRESH", "REINDEX", "RELATIVE", "RELEASE",
+    "RENAME", "REPEATABLE", "REPLACE", "REPLICA", "RESET", "RESTART", "RESTRICT",
+    "RETURN", "RETURNING", "RETURNS", "REVOKE", "RIGHT", "ROLE", "ROLLBACK",
+    "ROLLUP", "ROUTINE", "ROUTINES", "ROW", "ROWS", "RULE", "SAVEPOINT", "SCHEMA",
+    "SCHEMAS", "SCROLL", "SEARCH", "SECOND", "SECURITY", "SELECT", "SEQUENCE",
+    "SEQUENCES", "SERIALIZABLE", "SERVER", "SESSION", "SESSION_USER", "SET",
+    "SETOF", "SETS", "SHARE", "SHOW", "SIMILAR", "SIMPLE", "SKIP", "SMALLINT",
+    "SNAPSHOT", "SOME", "SQL", "STABLE", "STANDALONE", "START", "STATEMENT",
+    "STATISTICS", "STDIN", "STDOUT", "STORAGE", "STORED", "STRICT", "STRIP",
+    "SUBSCRIPTION", "SUBSTRING", "SUPPORT", "SYMMETRIC", "SYSID", "SYSTEM",
+    "TABLE", "TABLES", "TABLESAMPLE", "TABLESPACE", "TEMP", "TEMPLATE",
+    "TEMPORARY", "TEXT", "THEN", "TIES", "TIME", "TIMESTAMP", "TO", "TRAILING",
+    "TRANSACTION", "TRANSFORM", "TREAT", "TRIGGER", "TRIM", "TRUE", "TRUNCATE",
+    "TRUSTED", "TYPE", "TYPES", "UESCAPE", "UNBOUNDED", "UNCOMMITTED", "UNENCRYPTED",
+    "UNION", "UNIQUE", "UNKNOWN", "UNLISTEN", "UNLOGGED", "UNTIL", "UPDATE",
+    "USER", "USING", "VACUUM", "VALID", "VALIDATE", "VALIDATOR", "VALUE",
+    "VALUES", "VARCHAR", "VARIADIC", "VARYING", "VERBOSE", "VERSION", "VIEW",
+    "VIEWS", "VOLATILE", "WHEN", "WHERE", "WHITESPACE", "WINDOW", "WITH",
+    "WITHIN", "WITHOUT", "WORK", "WRAPPER", "WRITE", "XML", "YEAR", "YES", "ZONE",
+};
 
 static KEYWORD_MAP: phf::Map<&'static str, SyntaxKind> = phf::phf_map! {
     "ABORT" => SyntaxKind::ABORT_KW,

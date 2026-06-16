@@ -215,6 +215,24 @@ impl<'t> Parser<'t> {
         }
     }
 
+    /// Consume the current token but label it in the tree as `kind`. Used to
+    /// record a non-reserved keyword that is being used as an identifier as a
+    /// plain `IDENT`, so downstream consumers (name resolution, capitalisation
+    /// lints) treat it as the identifier it is.
+    pub fn bump_remap(&mut self, kind: SyntaxKind) {
+        assert!(!self.at_end(), "bump at end of file");
+        self.fuel = 256;
+        self.skip_trivia();
+        if self.pos < self.tokens.len() {
+            self.events.push(Event::Token {
+                kind,
+                n_raw_tokens: 1,
+            });
+            self.pos += 1;
+        }
+        self.skip_trivia();
+    }
+
     fn skip_trivia(&mut self) {
         while self.pos < self.tokens.len() && self.tokens[self.pos].kind.is_trivia() {
             let token = &self.tokens[self.pos];

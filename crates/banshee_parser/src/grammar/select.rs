@@ -11,10 +11,15 @@ pub fn at_ident(p: &Parser<'_>) -> bool {
     matches!(p.current(), SyntaxKind::IDENT | SyntaxKind::QUOTED_IDENT)
 }
 
-/// Expects an identifier (IDENT or QUOTED_IDENT), with recovery on failure.
+/// Expects an identifier, with recovery on failure. Accepts a real identifier,
+/// a quoted identifier, or any non-reserved keyword (PostgreSQL's `ColId`), so
+/// unreserved keywords like `type` or `value` can name columns and objects.
 pub fn expect_ident(p: &mut Parser<'_>, recovery: TokenSet) {
     if at_ident(p) {
         p.bump();
+    } else if p.current().can_be_identifier() {
+        // A non-reserved keyword in identifier position: record it as an IDENT.
+        p.bump_remap(SyntaxKind::IDENT);
     } else {
         p.expect_recover(SyntaxKind::IDENT, recovery);
     }

@@ -68,6 +68,11 @@ const CORPUS: &[&str] = &[
     "SELECT string_agg(name, ',') WITHIN GROUP (ORDER BY name) FROM users",
     "SELECT * FROM generate_series(1, 10) AS s(n)",
     "SELECT extract(year FROM now()), substring('abc' FROM 1 FOR 2), trim(both ' ' FROM x) FROM t",
+    "SELECT replace(name, ' ', '-'), translate(name, 'abc', 'xyz') FROM t",
+    "SELECT lower(replace(regexp_replace(translate(name, 'abc', 'xyz'), '[^a-z]', '', 'g'), ' ', '-')) FROM t",
+    // --- niladic special functions ---
+    "SELECT CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP, CURRENT_USER, SESSION_USER",
+    "SELECT LOCALTIME, LOCALTIMESTAMP, CURRENT_TIMESTAMP(3), CURRENT_TIME(2), LOCALTIMESTAMP(6)",
     // --- CTE / set ops ---
     "WITH cte AS (SELECT id FROM users) SELECT * FROM cte",
     "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 10) SELECT * FROM t",
@@ -77,6 +82,9 @@ const CORPUS: &[&str] = &[
     "INSERT INTO users (id, name) VALUES (1, 'Alice'), (2, 'Bob')",
     "INSERT INTO users (name) VALUES ('x') ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id",
     "INSERT INTO t DEFAULT VALUES",
+    "INSERT INTO t (id, name) OVERRIDING SYSTEM VALUE VALUES (1, 'a')",
+    "INSERT INTO t (id, name) OVERRIDING USER VALUE VALUES (1, 'a')",
+    "INSERT INTO t (created_at) VALUES (CURRENT_TIMESTAMP)",
     "UPDATE users SET active = true, name = 'x' WHERE id = 1 RETURNING *",
     "UPDATE u SET v = c.v FROM contacts c WHERE u.id = c.uid",
     "DELETE FROM users USING blocklist b WHERE users.id = b.uid RETURNING id",
@@ -128,6 +136,16 @@ const DDL_CORPUS: &[&str] = &[
     "CREATE TABLE archive AS SELECT * FROM users WHERE active",
     "CREATE TABLE t (id int, name text COLLATE \"C\")",
     "CREATE TABLE t (id int, CHECK (id > 0))",
+    // unreserved keywords used as identifiers (ColId)
+    "CREATE TABLE t (type text NOT NULL, value int, source text, name text)",
+    "SELECT type, value FROM t WHERE type = 'x' AND source IS NOT NULL",
+    "CREATE TABLE t (a int, b int, UNIQUE NULLS NOT DISTINCT (a, b))",
+    "CREATE TABLE t (a int UNIQUE NULLS NOT DISTINCT)",
+    // ALTER TYPE
+    "ALTER TYPE my_enum ADD VALUE 'new_value'",
+    "ALTER TYPE my_enum ADD VALUE IF NOT EXISTS 'v' BEFORE 'w'",
+    "ALTER TYPE my_enum RENAME TO other_enum",
+    "ALTER TYPE my_enum OWNER TO postgres",
     // ALTER TABLE
     "ALTER TABLE users ADD COLUMN age int NOT NULL DEFAULT 0",
     "ALTER TABLE users DROP COLUMN age",

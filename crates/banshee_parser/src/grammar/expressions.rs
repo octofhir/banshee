@@ -126,6 +126,16 @@ fn lhs(p: &mut Parser<'_>) -> Option<CompletedMarker> {
         SyntaxKind::TRIM_KW => trim_expr(p),
         SyntaxKind::OVERLAY_KW => overlay_expr(p),
 
+        // Niladic special functions: spelled without parentheses (with an
+        // optional precision for the time-valued ones), e.g. CURRENT_TIMESTAMP.
+        SyntaxKind::CURRENT_DATE_KW
+        | SyntaxKind::CURRENT_TIME_KW
+        | SyntaxKind::CURRENT_TIMESTAMP_KW
+        | SyntaxKind::CURRENT_USER_KW
+        | SyntaxKind::SESSION_USER_KW
+        | SyntaxKind::LOCALTIME_KW
+        | SyntaxKind::LOCALTIMESTAMP_KW => niladic_function_expr(p),
+
         // Array constructor
         SyntaxKind::ARRAY_KW => array_expr(p),
 
@@ -159,7 +169,10 @@ fn lhs(p: &mut Parser<'_>) -> Option<CompletedMarker> {
         | SyntaxKind::SUM_KW
         | SyntaxKind::AVG_KW
         | SyntaxKind::MIN_KW
-        | SyntaxKind::MAX_KW => name_ref(p),
+        | SyntaxKind::MAX_KW
+        // Unreserved keywords that are also ordinary built-in functions, so
+        // they may head a function call (e.g. replace()).
+        | SyntaxKind::REPLACE_KW => name_ref(p),
 
         // Star (for SELECT *)
         SyntaxKind::STAR => {
@@ -167,6 +180,10 @@ fn lhs(p: &mut Parser<'_>) -> Option<CompletedMarker> {
             p.bump();
             m.complete(p, SyntaxKind::STAR_EXPR)
         }
+
+        // Any non-reserved keyword can stand in for a column or function name
+        // (PostgreSQL's ColId), e.g. `type`, `value`, `source`.
+        kind if kind.can_be_identifier() => name_ref(p),
 
         _ => return None,
     };
@@ -395,7 +412,24 @@ fn postfix(p: &mut Parser<'_>, mut lhs: CompletedMarker) -> CompletedMarker {
 
 fn name_ref(p: &mut Parser<'_>) -> CompletedMarker {
     let m = p.start();
-    p.bump(); // IDENT or QUOTED_IDENT
+    // A non-reserved keyword used as a column/function name is recorded as an
+    // IDENT; real identifiers (and quoted identifiers) keep their kind. The
+    // aggregate keywords keep their kind so name resolution still recognises
+    // them as aggregates.
+    let kw = p.current();
+    let is_aggregate = matches!(
+        kw,
+        SyntaxKind::COUNT_KW
+            | SyntaxKind::SUM_KW
+            | SyntaxKind::AVG_KW
+            | SyntaxKind::MIN_KW
+            | SyntaxKind::MAX_KW
+    );
+    if kw.is_keyword() && !is_aggregate {
+        p.bump_remap(SyntaxKind::IDENT);
+    } else {
+        p.bump(); // IDENT, QUOTED_IDENT, or an aggregate keyword
+    }
 
     // Check for qualified name or function call
     if p.at(SyntaxKind::DOT) {
@@ -846,6 +880,31 @@ fn trim_expr(p: &mut Parser<'_>) -> CompletedMarker {
         expr(p);
     }
     p.expect_recover(SyntaxKind::R_PAREN, PAREN_RECOVERY);
+    m.complete(p, SyntaxKind::FUNC_CALL)
+}
+
+/// SQL niladic special functions, spelled without parentheses:
+/// `CURRENT_DATE`, `CURRENT_USER`, `SESSION_USER`, etc. The time-valued forms
+/// (`CURRENT_TIME`, `CURRENT_TIMESTAMP`, `LOCALTIME`, `LOCALTIMESTAMP`) accept an
+/// optional precision, e.g. `CURRENT_TIMESTAMP(3)`.
+fn niladic_function_expr(p: &mut Parser<'_>) -> CompletedMarker {
+    let m = p.start();
+    let kw = p.current();
+    p.bump(); // the keyword
+
+    let takes_precision = matches!(
+        kw,
+        SyntaxKind::CURRENT_TIME_KW
+            | SyntaxKind::CURRENT_TIMESTAMP_KW
+            | SyntaxKind::LOCALTIME_KW
+            | SyntaxKind::LOCALTIMESTAMP_KW
+    );
+    if takes_precision && p.at(SyntaxKind::L_PAREN) {
+        p.bump(); // (
+        p.expect(SyntaxKind::INTEGER);
+        p.expect_recover(SyntaxKind::R_PAREN, PAREN_RECOVERY);
+    }
+
     m.complete(p, SyntaxKind::FUNC_CALL)
 }
 

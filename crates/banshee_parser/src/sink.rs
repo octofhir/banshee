@@ -226,7 +226,13 @@ struct ErrorContext<'a> {
 fn sanitize_snippet(text: &str) -> String {
     let mut snippet = text.replace('\n', "\\n").replace('\t', "\\t");
     if snippet.len() > 32 {
-        snippet.truncate(32);
+        // Truncate to the largest char boundary at or below 32 bytes so we
+        // never split a multi-byte UTF-8 sequence (e.g. Cyrillic text).
+        let mut end = 32;
+        while end > 0 && !snippet.is_char_boundary(end) {
+            end -= 1;
+        }
+        snippet.truncate(end);
         snippet.push_str("...");
     }
     snippet
@@ -278,5 +284,25 @@ fn strip_string_quotes(s: &str) -> &str {
             s
         }
         _ => s,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_snippet;
+
+    #[test]
+    fn truncates_at_char_boundary_for_multibyte_text() {
+        // Cyrillic chars are 2 bytes each in UTF-8; byte 32 lands mid-character.
+        let text = "проверка границы символов в длинной строке";
+        let snippet = sanitize_snippet(text);
+        // Must not panic and must remain valid UTF-8 cut on a char boundary.
+        assert!(snippet.ends_with("..."));
+        assert!(snippet.len() <= 32 + "...".len());
+    }
+
+    #[test]
+    fn leaves_short_text_untouched() {
+        assert_eq!(sanitize_snippet("привет"), "привет");
     }
 }

@@ -93,6 +93,17 @@ fn alter_domain_stmt(p: &mut Parser<'_>) {
     m.complete(p, SyntaxKind::ALTER_DOMAIN_STMT);
 }
 
+fn alter_type_stmt(p: &mut Parser<'_>) {
+    let m = p.start();
+    p.bump(); // ALTER
+    p.bump(); // TYPE
+    relation_name(p);
+    // ADD VALUE [IF NOT EXISTS] 'v' [BEFORE|AFTER 'w'], RENAME [VALUE|ATTRIBUTE|TO] …,
+    // OWNER TO …, SET SCHEMA …, ADD/DROP/ALTER ATTRIBUTE …
+    consume_until_semi(p);
+    m.complete(p, SyntaxKind::ALTER_STMT);
+}
+
 fn create_function_stmt(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(); // CREATE
@@ -369,6 +380,7 @@ fn column_constraint(p: &mut Parser<'_>) {
         }
         SyntaxKind::UNIQUE_KW => {
             p.bump();
+            eat_nulls_distinct(p);
             SyntaxKind::UNIQUE_CONSTRAINT
         }
         SyntaxKind::CHECK_KW => {
@@ -411,6 +423,7 @@ fn table_constraint(p: &mut Parser<'_>) {
         }
         SyntaxKind::UNIQUE_KW => {
             p.bump();
+            eat_nulls_distinct(p);
             paren_column_list(p);
             SyntaxKind::UNIQUE_CONSTRAINT
         }
@@ -442,6 +455,14 @@ fn table_constraint(p: &mut Parser<'_>) {
     consume_not_valid(p);
 
     m.complete(p, kind);
+}
+
+/// Optional `NULLS [NOT] DISTINCT` modifier on a UNIQUE constraint/index.
+fn eat_nulls_distinct(p: &mut Parser<'_>) {
+    if p.eat(SyntaxKind::NULLS_KW) {
+        p.eat(SyntaxKind::NOT_KW);
+        p.expect(SyntaxKind::DISTINCT_KW);
+    }
 }
 
 fn references_clause(p: &mut Parser<'_>) {
@@ -579,6 +600,8 @@ pub fn alter_stmt(p: &mut Parser<'_>) {
         // DOMAIN is non-reserved (lexed as an identifier), so match on its text.
         if p.nth_text(1).eq_ignore_ascii_case("domain") {
             alter_domain_stmt(p);
+        } else if p.nth(1) == SyntaxKind::TYPE_KW {
+            alter_type_stmt(p);
         } else {
             skip_unsupported(p, format!("unsupported ALTER statement: {:?}", p.nth(1)));
         }

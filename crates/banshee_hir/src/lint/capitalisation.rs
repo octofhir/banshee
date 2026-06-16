@@ -31,6 +31,7 @@ impl Rule for Capitalisation {
         let kw_upper = wants_upper(analyzer, "CP01", true);
         let id_upper = wants_upper(analyzer, "CP02", false);
 
+        let mut prev_kind: Option<SyntaxKind> = None;
         for element in root.descendants_with_tokens() {
             let Some(token) = element.as_token() else {
                 continue;
@@ -39,9 +40,26 @@ impl Rule for Capitalisation {
             let text = token.text();
             let range = token.text_range();
 
+            if kind.is_trivia() {
+                continue;
+            }
+            let after_dot = prev_kind == Some(SyntaxKind::DOT);
+            prev_kind = Some(kind);
+
             let (code, upper, case_word) = if kind.is_keyword() {
+                // A non-reserved keyword used as a qualified-name component
+                // (`schema.type`) is an identifier, not a keyword — don't nag it.
+                if after_dot && !kind.is_reserved_keyword() {
+                    continue;
+                }
                 (RuleCode::Cp01, kw_upper, "Keyword")
             } else if kind == SyntaxKind::IDENT {
+                // A bare identifier whose spelling is a PostgreSQL keyword is a
+                // contextual keyword (e.g. `EACH`, `BEFORE`, `VALUE`) banshee
+                // lexes as an identifier — treat it as a keyword, not a name.
+                if banshee_syntax::is_postgres_keyword(text) {
+                    continue;
+                }
                 (RuleCode::Cp02, id_upper, "Identifier")
             } else {
                 continue;
