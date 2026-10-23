@@ -1082,6 +1082,76 @@ mod tests {
         assert_eq!(prefix, Some("прив".to_string()));
     }
 
+    fn end_of_text_provider() -> crate::providers::MemorySchemaProvider {
+        crate::providers::MemorySchemaProvider::new()
+            .add_table(crate::types::TableInfo::new("users").with_schema("public"))
+            .add_table(crate::types::TableInfo::new("orders").with_schema("public"))
+            .add_columns(
+                Some("public".to_string()),
+                "users",
+                vec![
+                    crate::types::ColumnInfo::new("id", "integer"),
+                    crate::types::ColumnInfo::new("name", "text"),
+                ],
+            )
+    }
+
+    /// Labels completed with the cursor at `offset` (end of text by default),
+    /// parsed the way an editor parses the document being typed.
+    fn labels_at(source: &str, offset: Option<usize>) -> Vec<String> {
+        let provider = end_of_text_provider();
+        let parse = banshee_parser::parse(source);
+        let offset = offset.unwrap_or(source.len()) as u32;
+        complete(
+            CompletionRequest::new(source, TextSize::new(offset))
+                .with_parse(&parse)
+                .with_schema_provider(&provider)
+                .with_limit(0),
+        )
+        .items
+        .into_iter()
+        .map(|item| item.label)
+        .collect()
+    }
+
+    #[test]
+    fn test_end_of_text_column_clauses_complete_columns() {
+        for source in [
+            "SELECT * FROM users WHERE ",
+            "SELECT * FROM users ORDER BY ",
+            "UPDATE users SET ",
+        ] {
+            let labels = labels_at(source, None);
+            assert!(labels.iter().any(|l| l == "id"), "{source:?}: {labels:?}");
+            assert!(labels.iter().any(|l| l == "name"), "{source:?}: {labels:?}");
+        }
+        let labels = labels_at("SELECT * FROM users WHERE na", None);
+        assert!(labels.iter().any(|l| l == "name"), "{labels:?}");
+    }
+
+    #[test]
+    fn test_end_of_text_table_clauses_complete_tables() {
+        for source in ["UPDATE ", "INSERT INTO ", "DELETE FROM "] {
+            let labels = labels_at(source, None);
+            assert!(
+                labels.iter().any(|l| l == "users"),
+                "{source:?}: {labels:?}"
+            );
+            assert!(
+                labels.iter().any(|l| l == "orders"),
+                "{source:?}: {labels:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_select_list_before_from_completes_columns() {
+        let source = "SELECT  FROM users";
+        let labels = labels_at(source, Some("SELECT ".len()));
+        assert!(labels.iter().any(|l| l == "id"), "{labels:?}");
+        assert!(labels.iter().any(|l| l == "name"), "{labels:?}");
+    }
+
     #[test]
     fn test_complete_alias_in_join_without_parse() {
         let provider = crate::providers::MemorySchemaProvider::new()

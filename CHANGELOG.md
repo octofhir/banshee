@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project tracks
 the latest stable Rust toolchain.
 
+## [0.2.4] - 2026-10-23
+
+### Fixed
+
+- **Completion at the end of the text.** With the cursor at the end of the
+  document (the usual case while typing), completion now resolves the clause
+  being written instead of falling back to bare keywords:
+  - columns after `WHERE `, `WHERE na`, `ORDER BY ` and `UPDATE t SET `;
+  - tables after `UPDATE ` and `INSERT INTO `;
+  - columns of the `FROM` tables in a select list typed before `FROM`.
+
 ## [0.2.3] - 2026-06-16
 
 ### Fixed

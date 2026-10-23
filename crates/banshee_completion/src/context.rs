@@ -60,9 +60,12 @@ fn find_token_at_offset(root: &SyntaxNode, offset: TextSize) -> Option<SyntaxTok
 }
 
 /// Finds the deepest node containing the offset.
+///
+/// The end is inclusive: a cursor at the end of the text (the common case
+/// while typing) must still resolve to the clause being written.
 fn find_node_at_offset(root: &SyntaxNode, offset: TextSize) -> Option<SyntaxNode> {
     root.descendants()
-        .filter(|n| n.text_range().contains(offset))
+        .filter(|n| n.text_range().contains_inclusive(offset))
         .last()
         .cloned()
 }
@@ -1104,10 +1107,21 @@ fn detect_from_token(token: &SyntaxToken, offset: TextSize) -> CompletionContext
     }
 
     match kind {
-        SyntaxKind::SELECT_KW => CompletionContext::SelectColumn { tables: Vec::new() },
-        SyntaxKind::FROM_KW => CompletionContext::TableName { schema: None },
+        SyntaxKind::SELECT_KW => CompletionContext::SelectColumn {
+            tables: find_tables_in_scope(token.parent()),
+        },
+        SyntaxKind::FROM_KW | SyntaxKind::UPDATE_KW | SyntaxKind::INTO_KW => {
+            CompletionContext::TableName { schema: None }
+        }
+        // `UPDATE t SET |` assigns columns of the target table
+        SyntaxKind::SET_KW => CompletionContext::ColumnRef {
+            table: None,
+            tables: find_tables_in_scope(token.parent()),
+        },
         SyntaxKind::WHERE_KW | SyntaxKind::AND_KW | SyntaxKind::OR_KW => {
-            CompletionContext::WhereCondition { tables: Vec::new() }
+            CompletionContext::WhereCondition {
+                tables: find_tables_in_scope(token.parent()),
+            }
         }
         SyntaxKind::JOIN_KW
         | SyntaxKind::LEFT_KW
