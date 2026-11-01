@@ -4,6 +4,7 @@ use banshee_syntax::SyntaxKind;
 
 use super::expressions::expr;
 use super::expressions::frame_clause;
+use super::expressions::type_name;
 use super::{CLAUSE_RECOVERY, JOIN_RECOVERY, PAREN_RECOVERY, SUBQUERY_RECOVERY};
 
 /// Checks if the current token is an identifier (IDENT or QUOTED_IDENT).
@@ -368,25 +369,19 @@ pub fn table_ref(p: &mut Parser<'_>) {
 
     // Alias (supports both IDENT and QUOTED_IDENT)
     if p.eat(SyntaxKind::AS_KW) {
-        expect_ident(p, JOIN_RECOVERY);
-        // Column aliases for functions: AS alias(col1, col2)
+        // `AS (col type, ...)`: a column definition list without an alias
         if p.at(SyntaxKind::L_PAREN) {
-            p.bump();
-            expect_ident(p, PAREN_RECOVERY);
-            while p.eat(SyntaxKind::COMMA) {
-                expect_ident(p, PAREN_RECOVERY);
+            column_alias_list(p);
+        } else {
+            expect_ident(p, JOIN_RECOVERY);
+            if p.at(SyntaxKind::L_PAREN) {
+                column_alias_list(p);
             }
-            p.expect_recover(SyntaxKind::R_PAREN, PAREN_RECOVERY);
         }
     } else if at_ident(p) && !is_join_keyword(p.current()) && !is_clause_keyword(p.current()) {
         p.bump();
         if p.at(SyntaxKind::L_PAREN) {
-            p.bump();
-            expect_ident(p, PAREN_RECOVERY);
-            while p.eat(SyntaxKind::COMMA) {
-                expect_ident(p, PAREN_RECOVERY);
-            }
-            p.expect_recover(SyntaxKind::R_PAREN, PAREN_RECOVERY);
+            column_alias_list(p);
         }
     }
 
@@ -399,6 +394,25 @@ pub fn table_ref(p: &mut Parser<'_>) {
         } else {
             break;
         }
+    }
+}
+
+/// `(col1, col2)` column aliases, or `(col1 type, col2 type)` a column
+/// definition list for a function returning `record` (`jsonb_to_recordset(x)
+/// AS t(a int, b text)`).
+fn column_alias_list(p: &mut Parser<'_>) {
+    p.bump(); // (
+    column_alias(p);
+    while p.eat(SyntaxKind::COMMA) {
+        column_alias(p);
+    }
+    p.expect_recover(SyntaxKind::R_PAREN, PAREN_RECOVERY);
+}
+
+fn column_alias(p: &mut Parser<'_>) {
+    expect_ident(p, PAREN_RECOVERY);
+    if !p.at(SyntaxKind::COMMA) && !p.at(SyntaxKind::R_PAREN) && !p.at_end() {
+        type_name(p, "column definition");
     }
 }
 
