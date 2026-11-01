@@ -1,8 +1,13 @@
-# banshee
+<p align="center"><img src=".github/banner.png" alt="octo/banshee — PostgreSQL SQL, parsed, formatted, linted" width="100%"></p>
 
-[![CI](https://github.com/octofhir/banshee/actions/workflows/ci.yml/badge.svg)](https://github.com/octofhir/banshee/actions/workflows/ci.yml)
+<p align="center"><b>A PostgreSQL SQL parser, formatter, linter, and language server, written in Rust.</b></p>
 
-A PostgreSQL SQL parser, formatter, linter, and language server, written in Rust.
+<p align="center">
+  <a href="https://github.com/octofhir/banshee/actions/workflows/ci.yml"><img src="https://github.com/octofhir/banshee/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://crates.io/crates/banshee"><img src="https://img.shields.io/crates/v/banshee.svg" alt="crates.io"></a>
+  <a href="https://docs.rs/banshee"><img src="https://docs.rs/banshee/badge.svg" alt="docs.rs"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a>
+</p>
 
 📖 **[Docs](https://octofhir.github.io/banshee/)** · **[Rule reference](https://octofhir.github.io/banshee/rules/)**
 
@@ -75,6 +80,7 @@ banshee fix    [--diff] [files…|-]
 banshee parse  [--format tree|json] [files…|-]
 banshee rules [--format human|json] [--group <category|prefix>]   # list lint rules
 banshee explain <CODE>        # detailed rule description with examples
+banshee schema refresh|show|clear|where   # manage the .banshee/ schema cache
 banshee init                  # scaffold a banshee.toml
 banshee lsp                   # language server over stdio
 ```
@@ -387,4 +393,11 @@ incompatibly within a minor version.
 
 ## License
 
-MIT
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this project by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
