@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project tracks
 the latest stable Rust toolchain.
 
+## [0.2.5] - 2026-11-01
+
+### Fixed
+
+- **Column definition lists in FROM.** `jsonb_to_recordset(x) AS t(a int, b text)`
+  and `json_to_record(x) AS (a int)` parse: a column alias of a function in
+  FROM may carry a type, as PostgreSQL allows for functions returning `record`.
+
 ## [0.2.4] - 2026-10-23
 
 ### Fixed
