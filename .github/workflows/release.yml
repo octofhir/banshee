@@ -56,7 +56,7 @@ jobs:
           staging="banshee-${{ matrix.target }}"
           mkdir "$staging"
           cp "target/${{ matrix.target }}/release/banshee" "$staging/"
-          cp README.md LICENSE "$staging/" 2>/dev/null || true
+          cp README.md LICENSE-MIT LICENSE-APACHE "$staging/" 2>/dev/null || true
           tar czf "$staging.tar.gz" "$staging"
       - name: Package (windows)
         if: matrix.archive == 'zip'
@@ -65,7 +65,7 @@ jobs:
           $staging = "banshee-${{ matrix.target }}"
           New-Item -ItemType Directory -Path $staging | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/banshee.exe" $staging
-          Copy-Item README.md, LICENSE $staging -ErrorAction SilentlyContinue
+          Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE $staging -ErrorAction SilentlyContinue
           Compress-Archive -Path $staging -DestinationPath "$staging.zip"
       - name: Upload artifact
         uses: actions/upload-artifact@v4

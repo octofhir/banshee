@@ -2,17 +2,25 @@ name: Release (tagged)
 
 # Pushing a `vX.Y.Z` tag cuts a stable, versioned GitHub release: a binary per
 # platform, each with a `.sha256`, published under that tag and marked latest.
-# The rolling `latest` pre-release (release.yml) is unaffected.
+# The rolling `latest` pre-release (release.yml) is unaffected. Run it by hand
+# with an existing `tag` to (re)build that release's binaries.
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (vX.Y.Z) to build binaries for
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   # Create the release first so the matrix upload jobs don't race to create it
@@ -24,9 +32,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-                 --title "$GITHUB_REF_NAME" --generate-notes
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+                 --title "$TAG" --generate-notes
 
   build:
     name: ${{ matrix.target }}
@@ -50,6 +58,8 @@ jobs:
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -65,11 +75,13 @@ jobs:
           features: db
           archive: banshee-$target
           checksum: sha256
-          include: README.md,LICENSE
+          include: README.md,LICENSE-MIT,LICENSE-APACHE
+          ref: refs/tags/${{ env.TAG }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
   crates-io:
     name: publish to crates.io
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # Independent of the binary build; needs the CARGO_REGISTRY_TOKEN repo secret.
     steps:
