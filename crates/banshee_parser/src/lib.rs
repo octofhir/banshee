@@ -248,6 +248,31 @@ mod tests {
     }
 
     #[test]
+    fn typed_literals_are_casts_of_the_string() {
+        for sql in [
+            "SELECT DATE '2024-01-01'",
+            "SELECT timestamp '2026-01-02 03:04:05' AS at FROM t",
+            "SELECT TIMESTAMP WITH TIME ZONE '2026-01-02 03:04:05+02'",
+            "SELECT time without time zone '10:00'",
+            "SELECT INTERVAL '1' DAY, interval '1:30' hour to minute, interval '2 days'",
+            "SELECT double precision '1.5', character varying 'x', int4 '7', jsonb '{}'",
+            "SELECT * FROM t WHERE d >= date '2024-01-01' AND ts < now() - interval '7 days'",
+        ] {
+            let parse = parse(sql);
+            assert!(parse.errors().is_empty(), "{sql}: {:?}", parse.errors());
+            let tree = format_tree(sql);
+            assert!(
+                tree.contains("CAST_EXPR") && tree.contains("TYPE_NAME"),
+                "{sql}\n{tree}"
+            );
+            assert!(!tree.contains("ERROR"), "{sql}\n{tree}");
+        }
+        // `name 'string'` is PostgreSQL's `func_name Sconst`: syntactically a
+        // typed literal whatever the name; the type is checked when it runs.
+        assert!(parse("SELECT a 'x' FROM t").errors().is_empty());
+    }
+
+    #[test]
     fn test_coalesce_nullif() {
         let sql = "SELECT COALESCE(a, b, c), NULLIF(x, y) FROM t";
         let parse = parse(sql);

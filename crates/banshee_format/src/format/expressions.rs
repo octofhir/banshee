@@ -16,6 +16,7 @@ pub fn format_expression(node: &SyntaxNode, printer: &mut Printer) {
         SyntaxKind::PAREN_EXPR => format_paren_expr(node, printer),
         SyntaxKind::FUNC_CALL => format_func_call(node, printer),
         SyntaxKind::CASE_EXPR => format_case_expr(node, printer),
+        SyntaxKind::TYPE_NAME => format_type_name(node, printer),
         SyntaxKind::CAST_EXPR => format_cast_expr(node, printer),
         SyntaxKind::BETWEEN_EXPR => format_between_expr(node, printer),
         SyntaxKind::IN_EXPR => format_in_expr(node, printer),
@@ -323,6 +324,31 @@ fn format_case_else(node: &SyntaxNode, printer: &mut Printer) {
 
 /// Formats a CAST expression.
 fn format_cast_expr(node: &SyntaxNode, printer: &mut Printer) {
+    // Typed literal: `type 'string'` (the type name comes first).
+    if node
+        .children()
+        .next()
+        .is_some_and(|first| first.kind() == SyntaxKind::TYPE_NAME)
+    {
+        let mut first = true;
+        for element in node.children_with_tokens() {
+            match element {
+                cstree::util::NodeOrToken::Node(child) => {
+                    if !first {
+                        printer.space();
+                    }
+                    format_expression(&child, printer);
+                    first = false;
+                }
+                cstree::util::NodeOrToken::Token(token) if !token.kind().is_trivia() => {
+                    printer.space();
+                    printer.write_keyword(token.text());
+                }
+                cstree::util::NodeOrToken::Token(_) => {}
+            }
+        }
+        return;
+    }
     // Check for PostgreSQL :: cast syntax
     let mut is_double_colon = false;
     for element in node.children_with_tokens() {
@@ -659,6 +685,35 @@ fn format_literal(node: &SyntaxNode, printer: &mut Printer) {
             }
             // Preserve literals exactly
             printer.write(token.text());
+        }
+    }
+}
+
+/// Formats a type name: its words separated by single spaces
+/// (`timestamp with time zone`, `double precision`, `numeric(10, 2)`).
+fn format_type_name(node: &SyntaxNode, printer: &mut Printer) {
+    let mut after_word = false;
+    for element in node.children_with_tokens() {
+        match element {
+            cstree::util::NodeOrToken::Node(child) => {
+                format_expression(&child, printer);
+                after_word = false;
+            }
+            cstree::util::NodeOrToken::Token(token) if token.kind().is_trivia() => {}
+            cstree::util::NodeOrToken::Token(token) => {
+                let kind = token.kind();
+                let word = kind.is_keyword()
+                    || matches!(kind, SyntaxKind::IDENT | SyntaxKind::QUOTED_IDENT);
+                if word && after_word {
+                    printer.space();
+                }
+                if kind.is_keyword() {
+                    printer.write_keyword(token.text());
+                } else {
+                    format_token(&token, printer);
+                }
+                after_word = word || kind == SyntaxKind::R_PAREN;
+            }
         }
     }
 }

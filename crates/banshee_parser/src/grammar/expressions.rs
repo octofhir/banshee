@@ -161,6 +161,10 @@ fn lhs(p: &mut Parser<'_>) -> Option<CompletedMarker> {
             m.complete(p, SyntaxKind::PARAM_REF)
         }
 
+        // Typed literal: `DATE '2024-01-01'`, `timestamp with time zone '…'`,
+        // `INTERVAL '1' DAY`, `int4 '7'` (a cast of the string to the type).
+        _ if starts_typed_literal(p) => typed_literal(p),
+
         // Identifier (column ref or function call)
         // Also handle aggregate/function keywords that can be used as function names
         SyntaxKind::IDENT
@@ -189,6 +193,79 @@ fn lhs(p: &mut Parser<'_>) -> Option<CompletedMarker> {
     };
 
     Some(postfix(p, cm))
+}
+
+/// Whether a typed literal starts here: a type name directly followed by a
+/// string constant.
+fn starts_typed_literal(p: &Parser<'_>) -> bool {
+    let first = p.current();
+    let names_a_type = matches!(
+        first,
+        SyntaxKind::IDENT
+            | SyntaxKind::INTEGER_KW
+            | SyntaxKind::INT_KW
+            | SyntaxKind::SMALLINT_KW
+            | SyntaxKind::BIGINT_KW
+            | SyntaxKind::REAL_KW
+            | SyntaxKind::FLOAT_KW
+            | SyntaxKind::DOUBLE_KW
+            | SyntaxKind::DECIMAL_KW
+            | SyntaxKind::NUMERIC_KW
+            | SyntaxKind::BOOLEAN_KW
+            | SyntaxKind::TEXT_KW
+            | SyntaxKind::VARCHAR_KW
+            | SyntaxKind::CHAR_KW
+            | SyntaxKind::CHARACTER_KW
+            | SyntaxKind::BIT_KW
+            | SyntaxKind::DATE_KW
+            | SyntaxKind::TIME_KW
+            | SyntaxKind::TIMESTAMP_KW
+            | SyntaxKind::TIMESTAMPTZ_KW
+            | SyntaxKind::INTERVAL_KW
+            | SyntaxKind::JSON_KW
+            | SyntaxKind::JSONB_KW
+    );
+    if !names_a_type {
+        return false;
+    }
+    match (first, p.nth(1)) {
+        (_, SyntaxKind::STRING) => true,
+        (SyntaxKind::DOUBLE_KW, SyntaxKind::PRECISION_KW)
+        | (
+            SyntaxKind::CHARACTER_KW | SyntaxKind::CHAR_KW | SyntaxKind::BIT_KW,
+            SyntaxKind::VARYING_KW,
+        ) => p.nth(2) == SyntaxKind::STRING,
+        (
+            SyntaxKind::TIME_KW | SyntaxKind::TIMESTAMP_KW,
+            SyntaxKind::WITH_KW | SyntaxKind::WITHOUT_KW,
+        ) => p.nth(4) == SyntaxKind::STRING,
+        _ => false,
+    }
+}
+
+/// `type 'string'` as a cast of the string to the type; an interval may
+/// name its fields after the string (`INTERVAL '1' DAY TO HOUR`).
+fn typed_literal(p: &mut Parser<'_>) -> CompletedMarker {
+    let is_interval = p.at(SyntaxKind::INTERVAL_KW);
+    let m = p.start();
+    type_name(p, "of a typed literal");
+    let literal = p.start();
+    p.bump();
+    literal.complete(p, SyntaxKind::LITERAL);
+    if is_interval {
+        const FIELDS: [&str; 6] = ["year", "month", "day", "hour", "minute", "second"];
+        loop {
+            let text = p.nth_text(0).to_ascii_lowercase();
+            if p.at(SyntaxKind::TO_KW)
+                || (p.at(SyntaxKind::IDENT) && FIELDS.contains(&text.as_str()))
+            {
+                p.bump();
+            } else {
+                break;
+            }
+        }
+    }
+    m.complete(p, SyntaxKind::CAST_EXPR)
 }
 
 fn postfix(p: &mut Parser<'_>, mut lhs: CompletedMarker) -> CompletedMarker {

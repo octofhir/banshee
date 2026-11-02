@@ -233,3 +233,20 @@ fn test_ddl_formatting_is_idempotent() {
         assert_eq!(once, twice, "not idempotent for `{sql}`:\n{once}");
     }
 }
+
+#[test]
+fn typed_literals_keep_their_type_before_the_string() {
+    let formatted = format_compact(
+        "select date '2024-01-01', timestamp with time zone '2024-01-01 10:00+02', interval '1' day from t",
+    );
+    let lower = formatted.to_lowercase();
+    for expected in [
+        "date '2024-01-01'",
+        "timestamp with time zone '2024-01-01 10:00+02'",
+        "interval '1' day",
+    ] {
+        assert!(lower.contains(expected), "{formatted}");
+    }
+    let pg = banshee_format::format_pgformatter("SELECT DATE '2024-01-01' FROM t");
+    assert!(pg.to_lowercase().contains("date '2024-01-01'"), "{pg}");
+}
