@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project tracks
 the latest stable Rust toolchain.
 
+## [0.2.6] - 2026-11-03
+
+### Fixed
+
+- **Typed literals.** `DATE '2024-01-01'`, `timestamp with time zone '…'`,
+  `INTERVAL '1' DAY TO HOUR`, `double precision '1.5'` and PostgreSQL's
+  `name 'string'` form parse, as a cast of the string to the type (a
+  `CAST_EXPR` whose first child is the `TYPE_NAME`); both formatters keep the
+  type before the string.
+- **Multi-word type names when formatting.** `timestamp with time zone`,
+  `double precision`, `timestamp(3) with time zone` keep their spaces (they
+  were printed run together, e.g. `TIMESTAMPWITH TIMEZONE`).
+
 ## [0.2.5] - 2026-11-01
 
 ### Fixed
