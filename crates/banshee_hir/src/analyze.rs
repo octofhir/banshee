@@ -545,7 +545,7 @@ pub struct MigrationColumn {
 }
 
 /// Cumulative column knowledge across a migration set: `"table.column"` →
-/// [`MigrationColumn`]. Built by [`collect_migration_columns`].
+/// [`MigrationColumn`]. Built by [`collect_migration_columns`](crate::collect_migration_columns).
 pub type MigrationColumns = std::collections::BTreeMap<String, MigrationColumn>;
 
 /// An empty option set, used when an analyzer is built without options.
