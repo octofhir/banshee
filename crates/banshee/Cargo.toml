@@ -22,6 +22,7 @@ pkg-fmt = "zip"
 [[bin]]
 name = "banshee"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [[bench]]
 name = "parse"
@@ -30,53 +31,75 @@ harness = false
 [[bench]]
 name = "format"
 harness = false
+required-features = ["cli"]
 
 [[bench]]
 name = "complete"
 harness = false
+required-features = ["cli"]
 
 [[example]]
 name = "parse_and_format"
 path = "../../examples/parse_and_format.rs"
+required-features = ["cli"]
 
 [[example]]
 name = "completion"
 path = "../../examples/completion.rs"
+required-features = ["cli"]
 
 [[example]]
 name = "custom_provider"
 path = "../../examples/custom_provider.rs"
+required-features = ["cli"]
 
 [[example]]
 name = "server_integration"
 path = "../../examples/server_integration.rs"
+required-features = ["cli"]
 
 [features]
-default = []
+default = ["cli"]
+# Optional tools used by the binary; the library needs only syntax, lexer and parser.
+cli = [
+    "dep:banshee_hir",
+    "dep:banshee_completion",
+    "dep:banshee_format",
+    "dep:banshee_config",
+    "dep:banshee_templater",
+    "dep:banshee_schema",
+    "dep:banshee_lsp",
+    "dep:clap",
+    "dep:anyhow",
+    "dep:annotate-snippets",
+    "dep:text-size",
+    "dep:rayon",
+    "dep:globset",
+]
 # Live database introspection for `banshee lsp` and schema-aware linting. Pulls in
 # sqlx + tokio; off by default so the binary stays lean when unused.
-db = ["banshee_schema/db", "dep:tokio"]
+db = ["cli", "banshee_schema/db", "dep:tokio"]
 
 [dependencies]
 banshee_syntax.workspace = true
 banshee_lexer.workspace = true
 banshee_parser.workspace = true
-banshee_hir.workspace = true
-banshee_completion.workspace = true
-banshee_format.workspace = true
-banshee_config.workspace = true
-banshee_templater.workspace = true
-banshee_schema.workspace = true
-banshee_lsp.workspace = true
-clap = { workspace = true }
-anyhow = { workspace = true }
-annotate-snippets = "0.11"
-text-size = { workspace = true }
-rayon = "1"
-globset = "0.4"
+banshee_hir = { workspace = true, optional = true }
+banshee_completion = { workspace = true, optional = true }
+banshee_format = { workspace = true, optional = true }
+banshee_config = { workspace = true, optional = true }
+banshee_templater = { workspace = true, optional = true }
+banshee_schema = { workspace = true, optional = true }
+banshee_lsp = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+annotate-snippets = { version = "0.12.17", optional = true }
+text-size = { workspace = true, optional = true }
+rayon = { version = "1", optional = true }
+globset = { version = "0.4", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
 text-size.workspace = true
-sqlparser = "0.60.0"
+sqlparser = "0.63"

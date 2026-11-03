@@ -19,4 +19,4 @@ text-size.workspace = true
 insta.workspace = true
 proptest.workspace = true
 # Oracle for differential testing: PostgreSQL's own parser (libpg_query).
-pg_parse = "0.14"
+pg_parse = "0.15"

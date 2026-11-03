@@ -21,6 +21,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all -- --check
+      - name: Parser-only library
+        run: |
+          cargo check --locked -p banshee --lib --no-default-features
+          python3 - <<'PY'
+          import re
+          import subprocess
+          graph = subprocess.check_output([
+              "cargo", "tree", "--locked", "-p", "banshee",
+              "--no-default-features", "--edges", "normal,build",
+              "--prefix", "none", "--format", "{p}",
+          ], text=True)
+          forbidden = re.findall(
+              r"^(?:banshee_(?:hir|completion|format|config|templater|schema|lsp)|clap|annotate-snippets|rayon|globset|tokio|sqlx) v.*",
+              graph, re.M,
+          )
+          if forbidden:
+              raise SystemExit("Unexpected parser dependencies: " + ", ".join(forbidden))
+          PY
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test

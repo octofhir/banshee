@@ -6,19 +6,19 @@
 
 use std::io::IsTerminal;
 
-use annotate_snippets::{Level, Renderer, Snippet};
+use annotate_snippets::{AnnotationKind, Group, Level, Renderer, Snippet};
 use banshee_hir::{Diagnostic, Severity};
 
 use super::io::{InputFile, json_escape, line_col};
 use super::rules_cmd;
 
-fn level_of(severity: Severity) -> Level {
+fn level_of<'a>(severity: Severity) -> Level<'a> {
     match severity {
-        Severity::Error => Level::Error,
-        Severity::Warning => Level::Warning,
-        Severity::Info => Level::Info,
-        Severity::Hint => Level::Note,
-        _ => Level::Warning,
+        Severity::Error => Level::ERROR,
+        Severity::Warning => Level::WARNING,
+        Severity::Info => Level::INFO,
+        Severity::Hint => Level::NOTE,
+        _ => Level::WARNING,
     }
 }
 
@@ -55,9 +55,9 @@ pub fn render(origin: &str, source: &str, diagnostics: &[Diagnostic], color: boo
         // line, so repeating it under the caret is noise. Secondary (related)
         // spans below DO carry labels, since they add new information.
         let mut snippet = Snippet::source(source)
-            .origin(origin)
+            .path(origin)
             .fold(true)
-            .annotation(level.span(start..end));
+            .annotation(AnnotationKind::Primary.span(start..end));
 
         // Render related info that points into the same source as secondary
         // caret spans (rustc-style "note: ... defined here"). Related entries
@@ -66,35 +66,33 @@ pub fn render(origin: &str, source: &str, diagnostics: &[Diagnostic], color: boo
             if let Some(r) = rel.range {
                 let rs = (u32::from(r.start()) as usize).min(source.len());
                 let re = (u32::from(r.end()) as usize).min(source.len()).max(rs);
-                snippet = snippet.annotation(Level::Info.span(rs..re).label(&rel.message));
+                snippet =
+                    snippet.annotation(AnnotationKind::Context.span(rs..re).label(&rel.message));
             }
         }
 
-        let mut message = level.title(&diag.message).snippet(snippet);
+        let mut title = level.primary_title(diag.message.as_str());
         if let Some(code) = diag.code {
-            message = message.id(code.as_str());
+            title = title.id(code.as_str());
         }
+        let mut message = title.element(snippet);
 
-        let help_note;
         if let Some(help) = &diag.help {
-            help_note = Level::Help.title(help.as_str());
-            message = message.footer(help_note);
+            message = message.element(Level::HELP.message(help.as_str()));
         }
 
         // Related info without a span becomes a plain note line.
         for rel in diag.related.iter().filter(|rel| rel.range.is_none()) {
-            message = message.footer(Level::Note.title(rel.message.as_str()));
+            message = message.element(Level::NOTE.message(rel.message.as_str()));
         }
 
         let fix_text;
-        let fix_note;
         if let Some(fix) = diag.fixes.first() {
             fix_text = format!("{} — run `banshee fix`", fix.title);
-            fix_note = Level::Note.title(&fix_text);
-            message = message.footer(fix_note);
+            message = message.element(Level::NOTE.message(fix_text.as_str()));
         }
 
-        out.push_str(&renderer.render(message).to_string());
+        out.push_str(&renderer.render(&[message]).to_string());
         out.push('\n');
     }
 
@@ -115,7 +113,8 @@ pub fn render(origin: &str, source: &str, diagnostics: &[Diagnostic], color: boo
             codes.join(", "),
             first
         );
-        out.push_str(&renderer.render(Level::Note.title(&summary)).to_string());
+        let report = [Group::with_title(Level::NOTE.primary_title(&summary))];
+        out.push_str(&renderer.render(&report).to_string());
         out.push('\n');
     }
 

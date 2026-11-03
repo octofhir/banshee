@@ -1,6 +1,7 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
+use std::hint::black_box;
 
 const SIMPLE_QUERY: &str = "SELECT id FROM users WHERE active = true;";
 const COMPLEX_QUERY: &str =

@@ -111,6 +111,25 @@ blocks on breaking changes. Skip legacy files with `exclude-paths` in
 `banshee.toml`. See the
 [backward-compatible migrations guide](https://octofhir.github.io/banshee/guides/backward-compatible-migrations/).
 
+## Embedding the parser
+
+Use the library without the command-line, formatter, completion or language-server dependencies:
+
+```toml
+[dependencies]
+banshee = { version = "0.2.7", default-features = false }
+```
+
+```rust
+let parsed = banshee::parser::parse("SELECT id FROM users");
+assert!(parsed.errors().is_empty());
+```
+
+The facade exports the CST types, lexer and parser. Add the `banshee_format`,
+`banshee_hir` or `banshee_completion` engine crates when you need their APIs.
+The default `cli` feature supplies the command-line tools; `db` includes it and
+adds live PostgreSQL introspection.
+
 ## Configuration
 
 Configuration lives in `banshee.toml`, discovered by walking up from the input.

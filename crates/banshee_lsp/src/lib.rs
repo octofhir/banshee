@@ -31,7 +31,7 @@ use lsp_types::{
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities,
     SignatureHelpOptions, SignatureHelpParams, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextEdit, Url, WorkspaceEdit,
+    TextEdit, Uri, WorkspaceEdit,
     notification::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
         PublishDiagnostics,
@@ -112,7 +112,7 @@ struct DocEntry {
 struct Server {
     config: BansheeConfig,
     schema: Option<CachedSchemaProvider>,
-    docs: HashMap<Url, DocEntry>,
+    docs: HashMap<Uri, DocEntry>,
     connection: Connection,
 }
 
@@ -219,7 +219,7 @@ impl Server {
     }
 
     /// Parses and analyzes `text`, caching the result under `uri`.
-    fn update_doc(&mut self, uri: Url, text: String) {
+    fn update_doc(&mut self, uri: Uri, text: String) {
         let parse = banshee_parser::parse(&text);
         let options = self.lint_options();
         let null = NullSchemaProvider;
@@ -255,7 +255,7 @@ impl Server {
         );
     }
 
-    fn publish_diagnostics(&self, uri: &Url) -> anyhow::Result<()> {
+    fn publish_diagnostics(&self, uri: &Uri) -> anyhow::Result<()> {
         let Some(entry) = self.docs.get(uri) else {
             return Ok(());
         };
@@ -451,7 +451,7 @@ impl Server {
 /// Builds quick-fix code actions from a document's cached diagnostics that
 /// overlap the requested range.
 fn code_actions(
-    uri: &Url,
+    uri: &Uri,
     entry: &DocEntry,
     params: &CodeActionParams,
 ) -> Vec<CodeActionOrCommand> {
@@ -471,14 +471,12 @@ fn code_actions(
                 .iter()
                 .map(|e| convert::text_edit(&index, e))
                 .collect();
-            let mut changes = HashMap::new();
-            changes.insert(uri.clone(), edits);
             actions.push(CodeActionOrCommand::CodeAction(CodeAction {
                 title: fix.title.clone(),
                 kind: Some(CodeActionKind::QUICKFIX),
                 diagnostics: Some(vec![convert::diagnostic(&index, diag)]),
                 edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
+                    changes: Some(HashMap::from([(uri.clone(), edits)])),
                     ..Default::default()
                 }),
                 ..Default::default()

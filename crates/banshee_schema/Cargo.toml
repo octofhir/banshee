@@ -13,7 +13,7 @@ description = "Postgres schema snapshots, on-disk cache, and schema providers fo
 default = []
 # Enables live Postgres introspection (pulls in sqlx + tokio). Off by default so
 # embedders consuming only the cached snapshot stay async-free.
-db = ["dep:sqlx", "dep:tokio"]
+db = ["dep:sqlx"]
 
 [dependencies]
 serde = { workspace = true }
@@ -25,6 +25,5 @@ sqlx = { version = "0.8", default-features = false, features = [
     "postgres",
     "runtime-tokio-rustls",
 ], optional = true }
-tokio = { version = "1", features = ["rt", "macros"], optional = true }
 
 [dev-dependencies]

@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project tracks
 the latest stable Rust toolchain.
 
+## 0.2.7 — 2026-11-04
+
+- Add a parser-only library configuration with `default-features = false`;
+  retain default CLI installation and make `db` include its CLI requirements.
+- Keep CLI-dependent examples and benchmarks behind the CLI feature, and remove
+  the schema crate's unused direct Tokio dependency.
+- Update private keyword generation, terminal diagnostics, LSP transport/types,
+  directory lookup and benchmark dependencies to current stable versions.
+- Retain the public CST and SQLx type versions for patch compatibility.
+
 ## [0.2.6] - 2026-11-03
 
 ### Fixed

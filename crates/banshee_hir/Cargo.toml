@@ -18,4 +18,4 @@ insta.workspace = true
 banshee_parser.workspace = true
 serde = { workspace = true }
 # Pure-Rust, serde-compatible YAML reader for the declarative rule fixtures.
-noyalib = "0.0.53"
+noyalib = "0.0.58"
