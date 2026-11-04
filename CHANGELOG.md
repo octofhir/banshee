@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project tracks
 the latest stable Rust toolchain.
 
+## 0.2.8 — 2026-11-04
+
+- Resolve column references of an enclosing query inside a correlated subquery
+  (`EXISTS (SELECT 1 FROM t WHERE t.code = outer.code)`): the HIR scope of a
+  subquery now chains to the scopes of the statements around it, so the outer
+  alias is no longer reported as an unknown table (RF01).
+
 ## 0.2.7 — 2026-11-04
 
 - Add a parser-only library configuration with `default-features = false`;

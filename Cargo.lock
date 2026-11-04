@@ -125,7 +125,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "banshee"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "annotate-snippets",
  "anyhow",
@@ -150,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "banshee_completion"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "banshee_hir",
  "banshee_parser",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "banshee_config"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "banshee_format",
  "banshee_templater",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "banshee_format"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "banshee_parser",
  "banshee_syntax",
@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "banshee_hir"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "banshee_parser",
  "banshee_syntax",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "banshee_lexer"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "banshee_syntax",
  "insta",
@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "banshee_lsp"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "banshee_completion",
@@ -225,7 +225,7 @@ dependencies = [
 
 [[package]]
 name = "banshee_parser"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "banshee_lexer",
  "banshee_syntax",
@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "banshee_schema"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "banshee_completion",
  "banshee_hir",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "banshee_syntax"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "cstree",
  "insta",
@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "banshee_templater"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "serde",
  "text-size",

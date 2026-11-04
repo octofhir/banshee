@@ -117,7 +117,7 @@ Use the library without the command-line, formatter, completion or language-serv
 
 ```toml
 [dependencies]
-banshee = { version = "0.2.7", default-features = false }
+banshee = { version = "0.2.8", default-features = false }
 ```
 
 ```rust
