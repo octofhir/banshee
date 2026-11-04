@@ -1734,18 +1734,31 @@ fn build_root_scope(
 ) -> Arc<Scope> {
     root.children()
         .find(|child| is_statement_kind(child.kind()))
-        .map(|statement| build_scope_for_statement(statement, statement, provider, analyzer))
+        .map(|statement| build_scope_for_statement(statement, statement, provider, analyzer, None))
         .unwrap_or_else(|| ScopeBuilder::new().build())
 }
 
+/// The scope a node's names resolve in: its statement's tables, with the
+/// tables of every enclosing statement as parent scopes, so a subquery's
+/// correlated reference to an outer table (`EXISTS (SELECT 1 FROM b WHERE
+/// b.x = a.x)`) resolves while its own tables shadow the outer ones.
 fn build_scope_for_node(
     node: &banshee_syntax::SyntaxNode,
     provider: &dyn SchemaProvider,
     analyzer: &Analyzer<'_>,
 ) -> Arc<Scope> {
-    nearest_statement(node)
-        .map(|statement| build_scope_for_statement(&statement, node, provider, analyzer))
-        .unwrap_or_else(|| ScopeBuilder::new().build())
+    let statements: Vec<banshee_syntax::SyntaxNode> = node
+        .ancestors()
+        .filter(|ancestor| is_statement_kind(ancestor.kind()))
+        .cloned()
+        .collect();
+    let mut scope: Option<Arc<Scope>> = None;
+    for statement in statements.iter().rev() {
+        scope = Some(build_scope_for_statement(
+            statement, node, provider, analyzer, scope,
+        ));
+    }
+    scope.unwrap_or_else(|| ScopeBuilder::new().build())
 }
 
 fn build_scope_for_statement(
@@ -1753,6 +1766,7 @@ fn build_scope_for_statement(
     context_node: &banshee_syntax::SyntaxNode,
     provider: &dyn SchemaProvider,
     analyzer: &Analyzer<'_>,
+    parent: Option<Arc<Scope>>,
 ) -> Arc<Scope> {
     let visible_ctes = visible_ctes_for_node(context_node, analyzer);
     let cte_map: HashMap<String, CteBinding> = visible_ctes
@@ -1761,7 +1775,10 @@ fn build_scope_for_statement(
         .map(|cte| (cte.name.to_lowercase(), cte))
         .collect();
 
-    let mut builder = ScopeBuilder::new();
+    let mut builder = match parent {
+        Some(parent) => ScopeBuilder::with_parent(parent),
+        None => ScopeBuilder::new(),
+    };
     for cte in visible_ctes {
         builder = builder.add_cte_declaration(cte);
     }
@@ -2252,6 +2269,87 @@ mod tests {
         let parse = banshee_parser::parse(sql);
         let provider = TestProvider::with_patient_table();
         analyze_query_with_options(&parse, &provider, options)
+    }
+
+    fn analyze_patient_and_observation(sql: &str) -> Analysis {
+        let mut provider = TestProvider::with_patient_table();
+        provider.tables.insert(
+            "observation".to_string(),
+            vec![
+                ColumnInfo {
+                    name: "id".to_string(),
+                    data_type: DataType::Text,
+                    nullable: false,
+                    ordinal: 0,
+                },
+                ColumnInfo {
+                    name: "subject_id".to_string(),
+                    data_type: DataType::Text,
+                    nullable: true,
+                    ordinal: 1,
+                },
+            ],
+        );
+        analyze_query(&banshee_parser::parse(sql), &provider)
+    }
+
+    fn rf01_messages(analysis: &Analysis) -> Vec<String> {
+        analysis
+            .errors()
+            .filter(|d| d.code == Some(RuleCode::Rf01))
+            .map(|d| d.message.clone())
+            .collect()
+    }
+
+    #[test]
+    fn test_correlated_subquery_sees_outer_tables() {
+        let analysis = analyze_patient_and_observation(
+            "SELECT p.id FROM patient AS p \
+             WHERE EXISTS (SELECT 1 FROM observation AS o WHERE o.subject_id = p.id)",
+        );
+        assert!(
+            rf01_messages(&analysis).is_empty(),
+            "{:?}",
+            analysis.diagnostics
+        );
+
+        let unqualified_table_name = analyze_patient_and_observation(
+            "SELECT patient.id FROM patient \
+             WHERE patient.id IN (SELECT observation.subject_id FROM observation \
+                                  WHERE observation.subject_id = patient.id)",
+        );
+        assert!(
+            rf01_messages(&unqualified_table_name).is_empty(),
+            "{:?}",
+            unqualified_table_name.diagnostics
+        );
+    }
+
+    #[test]
+    fn test_correlated_subquery_still_checks_names() {
+        let unknown_alias = analyze_patient_and_observation(
+            "SELECT p.id FROM patient AS p \
+             WHERE EXISTS (SELECT 1 FROM observation AS o WHERE o.subject_id = q.id)",
+        );
+        assert!(
+            rf01_messages(&unknown_alias)
+                .iter()
+                .any(|m| m.contains("Unknown table alias 'q'")),
+            "{:?}",
+            unknown_alias.diagnostics
+        );
+
+        let unknown_outer_column = analyze_patient_and_observation(
+            "SELECT p.id FROM patient AS p \
+             WHERE EXISTS (SELECT 1 FROM observation AS o WHERE o.subject_id = p.nope)",
+        );
+        assert!(
+            rf01_messages(&unknown_outer_column)
+                .iter()
+                .any(|m| m.contains("'nope'")),
+            "{:?}",
+            unknown_outer_column.diagnostics
+        );
     }
 
     #[test]
