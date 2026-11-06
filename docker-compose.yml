@@ -4,7 +4,7 @@
 #   just db-down     # tear down
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: banshee
       POSTGRES_PASSWORD: banshee
