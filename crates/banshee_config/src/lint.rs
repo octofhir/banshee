@@ -1,8 +1,7 @@
 //! Lint rule selection and per-rule configuration.
 //!
-//! Decoupled from `banshee_hir`'s runtime lint types: this is the on-disk schema.
-//! Consumers translate [`SeverityLevel`] into `banshee_hir::Severity` and resolve
-//! the effective rule set at analysis time.
+//! This is the on-disk schema. The shared analysis pipeline resolves it into
+//! the effective rules at analysis time.
 
 use std::collections::BTreeMap;
 

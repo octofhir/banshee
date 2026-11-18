@@ -59,6 +59,7 @@ pub enum SyntaxKind {
     TILDE_STAR,      // ~*  Case-insensitive regex
     BANG_TILDE,      // !~  Regex not match
     BANG_TILDE_STAR, // !~* Case-insensitive regex not match
+    GENERIC_OP,      // PostgreSQL user-defined symbolic operator
     AMP,             // &   Bitwise AND
     PIPE,            // |   Bitwise OR
     HASH,            // #   Bitwise XOR
@@ -374,6 +375,7 @@ pub enum SyntaxKind {
     MERGE_STMT,
     CREATE_TYPE_STMT,
     CREATE_FUNCTION_STMT,
+    SQL_ROUTINE_BODY,
     CREATE_TRIGGER_STMT,
     CREATE_DOMAIN_STMT,
     ALTER_DOMAIN_STMT,

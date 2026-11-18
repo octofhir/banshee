@@ -112,7 +112,7 @@ jobs:
             exit 0
           fi
           version="${GITHUB_REF_NAME#v}"
-          crates="banshee_syntax banshee_templater banshee_lexer banshee_parser \
+          crates="banshee_syntax banshee_lexer banshee_parser banshee_templater \
                   banshee_hir banshee_format banshee_completion banshee_config \
                   banshee_schema banshee_lsp banshee"
           for c in $crates; do

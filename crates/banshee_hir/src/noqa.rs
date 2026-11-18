@@ -23,8 +23,6 @@ use banshee_syntax::{NodeOrToken, SyntaxKind, SyntaxNode};
 
 use crate::analyze::Diagnostic;
 
-const NOQA_PREFIX: &str = "noqa";
-
 /// A parsed `noqa` directive, tagged with the 1-based line it appears on.
 #[derive(Debug, Clone)]
 enum Directive {
@@ -81,8 +79,8 @@ impl Mask {
             let text = token.text();
 
             // Record line boundaries from any token that contains newlines.
-            for (i, ch) in text.char_indices() {
-                if ch == '\n' {
+            for (i, byte) in text.bytes().enumerate() {
+                if byte == b'\n' || (byte == b'\r' && text.as_bytes().get(i + 1) != Some(&b'\n')) {
                     line_starts.push(start + i as u32 + 1);
                 }
             }
@@ -193,32 +191,9 @@ fn rule_matches(token: &str, code: &str) -> bool {
 
 /// Parses a `noqa` directive out of a comment's raw text (markers included).
 fn parse_comment(text: &str) -> Option<Directive> {
-    // Strip comment markers. A line comment may itself contain `--`, so take
-    // the trailing segment (so `-- foo -- noqa` is still a valid directive).
-    let inner = if let Some(rest) = text.strip_prefix("/*") {
-        rest.strip_suffix("*/").unwrap_or(rest)
-    } else {
-        text.rsplit("--").next().unwrap_or(text)
-    };
-    let inner = inner.trim();
-
-    let rest = inner.strip_prefix(NOQA_PREFIX)?;
-    // Guard against words like `noqalike`.
-    if let Some(c) = rest.chars().next()
-        && !c.is_whitespace()
-        && c != ':'
-    {
-        return None;
-    }
-    let rest = rest.trim();
-
-    if rest.is_empty() {
-        return Some(Directive::LineAll);
-    }
-
-    let spec = rest.strip_prefix(':')?.trim();
+    let spec = banshee_syntax::noqa_payload(text)?;
     if spec.is_empty() {
-        return None;
+        return Some(Directive::LineAll);
     }
 
     if let Some(rules) = spec.strip_prefix("disable=") {

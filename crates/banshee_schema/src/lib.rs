@@ -20,8 +20,8 @@ pub mod introspect;
 
 pub use provider::CachedSchemaProvider;
 pub use snapshot::{
-    ColumnEntry, FunctionEntry, JsonbFieldShape, JsonbShape, JsonbType, SchemaSnapshot, TableEntry,
-    TableKind, fingerprint,
+    ColumnEntry, FunctionEntry, FunctionParameter, FunctionParameterMode, JsonbFieldShape,
+    JsonbShape, JsonbType, SchemaSnapshot, TableEntry, TableKind, fingerprint,
 };
 
 #[cfg(feature = "db")]

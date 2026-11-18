@@ -1,6 +1,6 @@
 ---
 title: Configuration
-description: The banshee.toml schema — formatter, linter, database and templater.
+description: Settings for formatting, linting, completion, database access and templating.
 sidebar:
   order: 1
 ---
@@ -49,6 +49,19 @@ enabled = true
 ```
 
 See the [rule reference](/banshee/rules/) for every code and its options.
+
+## Completion
+
+```toml
+[completion]
+keywords = true
+functions = true
+max-items = 200
+```
+
+These settings apply to editor completion and `banshee complete`. Set
+`max-items = 0` for an unlimited list. `banshee complete --limit N` overrides
+the configured cap for that invocation.
 
 ## Database (schema-aware features)
 

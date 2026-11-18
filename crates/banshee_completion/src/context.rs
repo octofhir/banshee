@@ -96,6 +96,15 @@ fn detect_context_from_token_and_node(
     }
 
     if token_kind == SyntaxKind::DOT
+        && matches!(
+            token.parent().kind(),
+            SyntaxKind::TABLE_REF | SyntaxKind::TABLE_NAME
+        )
+    {
+        return detect_table_name_context(token);
+    }
+
+    if token_kind == SyntaxKind::DOT
         && let Some(table) = find_table_qualifier(token, node)
     {
         return CompletionContext::ColumnRef {
@@ -438,20 +447,20 @@ fn detect_table_name_context(token: &SyntaxToken) -> CompletionContext {
 
 /// Finds a schema prefix before the current token.
 fn find_schema_prefix(token: &SyntaxToken) -> Option<String> {
-    // Look for pattern: IDENT DOT <cursor>
-    let mut prev = token.prev_token();
-    while let Some(t) = prev {
-        if t.kind() == SyntaxKind::DOT
-            && let Some(ident) = t.prev_token()
-            && (ident.kind() == SyntaxKind::IDENT || ident.kind() == SyntaxKind::QUOTED_IDENT)
-        {
-            return Some(ident.text().to_string());
-        } else if t.kind() != SyntaxKind::DOT && !t.kind().is_trivia() {
-            break;
-        }
-        prev = t.prev_token();
+    let mut preceding = std::iter::successors(token.prev_token(), |token| token.prev_token())
+        .filter(|token| !token.kind().is_trivia());
+    if token.kind() != SyntaxKind::DOT && preceding.next()?.kind() != SyntaxKind::DOT {
+        return None;
     }
-    None
+    let schema = preceding.next()?;
+    match schema.kind() {
+        SyntaxKind::QUOTED_IDENT => {
+            let name = schema.text().strip_prefix('"')?.strip_suffix('"')?;
+            Some(name.replace("\"\"", "\""))
+        }
+        kind if kind.can_be_identifier() => Some(schema.text().to_ascii_lowercase()),
+        _ => None,
+    }
 }
 
 /// Detects WHERE clause context.

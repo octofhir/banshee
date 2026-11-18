@@ -1,66 +1,150 @@
-//! Conversions between banshee's byte offsets and LSP's UTF-16 positions, and
-//! between banshee diagnostics/edits and their LSP equivalents.
+//! Conversions between banshee's byte offsets and LSP's UTF-16 positions,
+//! including diagnostics, edits and completion items.
 
+use std::borrow::Cow;
+use std::ops::Range as ByteRange;
+
+use anyhow::Context;
+use banshee_completion::{CompletionItem as SqlCompletionItem, CompletionItemKind as SqlKind};
 use banshee_hir::{Diagnostic as HirDiagnostic, Severity, TextEdit as HirEdit};
-use lsp_types::{Diagnostic as LspDiagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
+use lsp_types::{
+    CompletionItem, CompletionItemKind, Diagnostic as LspDiagnostic, DiagnosticSeverity,
+    Documentation, NumberOrString, Position, Range, TextDocumentContentChangeEvent,
+};
 use text_size::TextRange;
 
-/// Precomputed line start offsets for fast offset <-> position mapping.
+pub fn completion_item(item: SqlCompletionItem) -> CompletionItem {
+    let kind = match item.kind {
+        SqlKind::Table | SqlKind::View => CompletionItemKind::STRUCT,
+        SqlKind::Column => CompletionItemKind::FIELD,
+        SqlKind::Function => CompletionItemKind::FUNCTION,
+        SqlKind::Keyword => CompletionItemKind::KEYWORD,
+        SqlKind::Alias => CompletionItemKind::VARIABLE,
+        SqlKind::Schema => CompletionItemKind::MODULE,
+        SqlKind::JsonbPath => CompletionItemKind::PROPERTY,
+        SqlKind::Snippet => CompletionItemKind::SNIPPET,
+        SqlKind::Type => CompletionItemKind::CLASS,
+        SqlKind::Operator => CompletionItemKind::OPERATOR,
+        _ => CompletionItemKind::TEXT,
+    };
+    CompletionItem {
+        label: item.label,
+        kind: Some(kind),
+        detail: item.detail,
+        documentation: item.documentation.map(Documentation::String),
+        insert_text: item.insert_text,
+        sort_text: item.sort_key,
+        filter_text: item.filter_text,
+        ..Default::default()
+    }
+}
+
+/// Document text and the byte bounds of each line, excluding its terminator.
+#[derive(Clone)]
 pub struct LineIndex {
     text: String,
-    /// Byte offset of the start of each line.
-    line_starts: Vec<u32>,
+    lines: Vec<Line>,
+}
+
+#[derive(Clone)]
+struct Line {
+    start: usize,
+    end: usize,
 }
 
 impl LineIndex {
-    pub fn new(text: &str) -> Self {
-        let mut line_starts = vec![0u32];
-        for (i, b) in text.bytes().enumerate() {
-            if b == b'\n' {
-                line_starts.push((i + 1) as u32);
-            }
+    pub fn new(text: impl Into<String>) -> Self {
+        let text = text.into();
+        let lines = Self::index_lines(&text);
+        Self { text, lines }
+    }
+
+    fn index_lines(text: &str) -> Vec<Line> {
+        let mut lines = Vec::new();
+        let mut start = 0;
+        let mut bytes = text.bytes().enumerate().peekable();
+        while let Some((end, byte)) = bytes.next() {
+            let terminator_len = match byte {
+                b'\n' => 1,
+                b'\r' => 1 + usize::from(bytes.next_if(|&(_, b)| b == b'\n').is_some()),
+                _ => continue,
+            };
+            lines.push(Line { start, end });
+            start = end + terminator_len;
         }
-        Self {
-            text: text.to_string(),
-            line_starts,
-        }
+        lines.push(Line {
+            start,
+            end: text.len(),
+        });
+        lines
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    fn line_at(&self, offset: usize) -> usize {
+        self.lines.partition_point(|line| line.start <= offset) - 1
     }
 
     /// Maps a byte offset to an LSP position (UTF-16 column).
     pub fn position(&self, offset: u32) -> Position {
-        let line = match self.line_starts.binary_search(&offset) {
-            Ok(l) => l,
-            Err(next) => next - 1,
-        };
-        let line_start = self.line_starts[line] as usize;
-        let end = (offset as usize).min(self.text.len());
-        let col_utf16 = self.text[line_start..end]
-            .chars()
-            .map(|c| c.len_utf16() as u32)
-            .sum();
-        Position {
-            line: line as u32,
-            character: col_utf16,
+        let line = self.line_at(offset as usize);
+        let bounds = &self.lines[line];
+        let mut end = (offset as usize).min(bounds.end);
+        while !self.text.is_char_boundary(end) {
+            end -= 1;
         }
+        Position::new(line as u32, self.utf16_len(bounds.start, end))
     }
 
     /// Maps an LSP position back to a byte offset.
     pub fn offset(&self, pos: Position) -> u32 {
-        let line = pos.line as usize;
-        if line >= self.line_starts.len() {
-            return self.text.len() as u32;
-        }
-        let line_start = self.line_starts[line] as usize;
-        let mut utf16 = 0u32;
-        let mut byte = line_start;
-        for ch in self.text[line_start..].chars() {
-            if utf16 >= pos.character || ch == '\n' {
-                break;
+        self.byte_offset(pos)
+            .map_or(self.text.len(), |(offset, _)| offset) as u32
+    }
+
+    fn byte_offset(&self, pos: Position) -> Option<(usize, bool)> {
+        let line = self.lines.get(pos.line as usize)?;
+        let mut remaining = pos.character;
+        for (offset, ch) in self.text[line.start..line.end].char_indices() {
+            let width = ch.len_utf16() as u32;
+            if remaining < width {
+                return Some((line.start + offset, remaining == 0));
             }
-            utf16 += ch.len_utf16() as u32;
-            byte += ch.len_utf8();
+            remaining -= width;
         }
-        byte as u32
+        Some((line.end, true))
+    }
+
+    fn edit_range(&self, range: Range) -> Option<ByteRange<usize>> {
+        let (start, start_on_boundary) = self.byte_offset(range.start)?;
+        let (end, end_on_boundary) = self.byte_offset(range.end)?;
+        (range.start <= range.end && start_on_boundary && end_on_boundary).then_some(start..end)
+    }
+
+    /// Applies each range to the text produced by the preceding changes.
+    pub fn apply_changes(
+        previous: Option<&Self>,
+        changes: Vec<TextDocumentContentChangeEvent>,
+    ) -> anyhow::Result<Self> {
+        let mut document = previous.map(Cow::Borrowed);
+        for change in changes {
+            if let Some(range) = change.range {
+                let index = document.as_mut().context("a full document is required")?;
+                let bytes = index
+                    .edit_range(range)
+                    .context("invalid UTF-16 change range")?;
+                let index = index.to_mut();
+                index.text.replace_range(bytes, &change.text);
+                index.lines = Self::index_lines(&index.text);
+            } else {
+                document = Some(Cow::Owned(Self::new(change.text)));
+            }
+        }
+        document
+            .map(Cow::into_owned)
+            .context("a full document is required")
     }
 
     /// Maps a byte range to an LSP range.
@@ -69,6 +153,51 @@ impl LineIndex {
             start: self.position(u32::from(range.start())),
             end: self.position(u32::from(range.end())),
         }
+    }
+
+    /// Returns the nonempty, single-line parts of a token's byte range.
+    pub fn line_segments(&self, range: TextRange) -> impl Iterator<Item = (Position, u32)> + '_ {
+        let start = usize::from(range.start());
+        let end = usize::from(range.end());
+        (self.line_at(start)..=self.line_at(end)).filter_map(move |line| {
+            let bounds = &self.lines[line];
+            let start = start.max(bounds.start);
+            let end = end.min(bounds.end);
+            (start < end).then(|| {
+                let pos = Position::new(line as u32, self.utf16_len(bounds.start, start));
+                (pos, self.utf16_len(start, end))
+            })
+        })
+    }
+
+    fn utf16_len(&self, start: usize, end: usize) -> u32 {
+        self.text[start..end].encode_utf16().count() as u32
+    }
+
+    pub fn replacement(&self, range: TextRange, new_text: &str) -> lsp_types::TextEdit {
+        let mut start = u32::from(range.start());
+        let mut end = u32::from(range.end());
+        let mut replacement = String::new();
+        // LSP cannot address the byte between CR and LF. Include the unchanged
+        // part of the terminator when a minimal diff ends inside it.
+        if self.inside_crlf(start as usize) {
+            start -= 1;
+            replacement.push('\r');
+        }
+        replacement.push_str(new_text);
+        if self.inside_crlf(end as usize) {
+            end += 1;
+            replacement.push('\n');
+        }
+        lsp_types::TextEdit {
+            range: Range::new(self.position(start), self.position(end)),
+            new_text: replacement,
+        }
+    }
+
+    fn inside_crlf(&self, offset: usize) -> bool {
+        let bytes = self.text.as_bytes();
+        offset > 0 && bytes.get(offset - 1..=offset) == Some(b"\r\n")
     }
 }
 
@@ -104,10 +233,7 @@ pub fn diagnostic(index: &LineIndex, d: &HirDiagnostic) -> LspDiagnostic {
 
 /// Converts a banshee text edit to an LSP text edit.
 pub fn text_edit(index: &LineIndex, edit: &HirEdit) -> lsp_types::TextEdit {
-    lsp_types::TextEdit {
-        range: index.range(edit.range),
-        new_text: edit.new_text.clone(),
-    }
+    index.replacement(edit.range, &edit.new_text)
 }
 
 #[cfg(test)]
@@ -135,5 +261,43 @@ mod tests {
         let pos = idx.position(idx.text.find('x').unwrap() as u32);
         assert_eq!(pos.line, 1);
         assert_eq!(pos.character, 0);
+    }
+
+    #[test]
+    fn utf16_positions_handle_astral_characters_and_line_endings() {
+        let index = LineIndex::new("é😀\r\nx\ry\n");
+        for (byte, pos) in [
+            (0, Position::new(0, 0)),
+            (2, Position::new(0, 1)),
+            (6, Position::new(0, 3)),
+            (8, Position::new(1, 0)),
+            (9, Position::new(1, 1)),
+            (10, Position::new(2, 0)),
+            (12, Position::new(3, 0)),
+        ] {
+            assert_eq!(index.position(byte), pos);
+            assert_eq!(index.offset(pos), byte);
+        }
+        assert_eq!(index.position(3), Position::new(0, 1));
+        assert_eq!(index.position(7), Position::new(0, 3));
+        assert_eq!(index.offset(Position::new(0, 2)), 2);
+        assert_eq!(index.offset(Position::new(0, 20)), 6);
+    }
+
+    #[test]
+    fn replacements_can_normalize_crlf() {
+        let index = LineIndex::new("a\r\nb");
+        let edit = index.replacement(TextRange::new(1.into(), 2.into()), "");
+        assert_eq!(
+            edit.range,
+            Range::new(Position::new(0, 1), Position::new(1, 0))
+        );
+        assert_eq!(edit.new_text, "\n");
+        let edit = index.replacement(TextRange::new(2.into(), 3.into()), "");
+        assert_eq!(
+            edit.range,
+            Range::new(Position::new(0, 1), Position::new(1, 0))
+        );
+        assert_eq!(edit.new_text, "\r");
     }
 }

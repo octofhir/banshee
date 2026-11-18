@@ -40,11 +40,13 @@
 //! - `support` - Helper functions for node traversal
 //! - `nodes` - All AST node definitions organized by category
 
+mod call_names;
 mod nodes;
 mod support;
 mod traits;
 
 // Re-export traits at the module level
+pub use call_names::{CallName, call_names};
 pub use traits::{AstNode, AstToken};
 
 // Re-export support functions

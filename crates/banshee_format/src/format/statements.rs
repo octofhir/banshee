@@ -285,7 +285,7 @@ fn format_from_clause(node: &SyntaxNode, printer: &mut Printer) {
 /// Formats a table reference.
 fn format_table_ref(node: &SyntaxNode, printer: &mut Printer) {
     let mut first = true;
-    let mut after_as = false;
+    let mut after_as_or_dot = false;
     for element in node.children_with_tokens() {
         match element {
             cstree::util::NodeOrToken::Node(child) => {
@@ -320,16 +320,18 @@ fn format_table_ref(node: &SyntaxNode, printer: &mut Printer) {
                     printer.space();
                     printer.write_keyword("AS");
                     printer.space();
-                    after_as = true;
+                    after_as_or_dot = true;
                     first = false;
+                } else if kind == SyntaxKind::DOT {
+                    printer.write(".");
+                    after_as_or_dot = true;
                 } else if kind == SyntaxKind::IDENT || kind == SyntaxKind::QUOTED_IDENT {
-                    // Don't add space if we just wrote AS
-                    if !first && !after_as {
+                    if !first && !after_as_or_dot {
                         printer.space();
                     }
                     printer.write_identifier(token.text());
                     first = false;
-                    after_as = false;
+                    after_as_or_dot = false;
                 } else {
                     format_token(&token, printer);
                 }

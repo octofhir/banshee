@@ -254,24 +254,32 @@ fn cte(p: &mut Parser<'_>) {
 fn select_list(p: &mut Parser<'_>) {
     let m = p.start();
 
-    select_item(p);
+    select_item(p, p.at(SyntaxKind::COMMA));
     while p.eat(SyntaxKind::COMMA) {
-        select_item(p);
+        select_item(p, true);
     }
 
     m.complete(p, SyntaxKind::SELECT_ITEM_LIST);
 }
 
-fn select_item(p: &mut Parser<'_>) {
+fn select_item(p: &mut Parser<'_>, required: bool) {
     let m = p.start();
 
-    expr(p);
+    if expr(p).is_none() {
+        if required {
+            p.error("expected expression in SELECT list");
+        }
+        m.complete(p, SyntaxKind::SELECT_ITEM);
+        return;
+    }
 
     // Optional alias
     if p.eat(SyntaxKind::AS_KW) {
         expect_ident(p, CLAUSE_RECOVERY);
     } else if at_ident(p) && !is_clause_keyword(p.current()) {
         p.bump();
+    } else if p.at(SyntaxKind::OPERATOR_KW) {
+        p.bump_remap(SyntaxKind::IDENT);
     }
 
     m.complete(p, SyntaxKind::SELECT_ITEM);
@@ -652,10 +660,14 @@ fn order_by_clause(p: &mut Parser<'_>) {
     m.complete(p, SyntaxKind::ORDER_BY_CLAUSE);
 }
 
-fn order_by_item(p: &mut Parser<'_>) {
+pub(super) fn order_by_item(p: &mut Parser<'_>) {
     let m = p.start();
     expr(p);
-    let _ = p.eat(SyntaxKind::ASC_KW) || p.eat(SyntaxKind::DESC_KW);
+    if p.eat(SyntaxKind::USING_KW) {
+        super::expressions::operator_reference(p);
+    } else {
+        let _ = p.eat(SyntaxKind::ASC_KW) || p.eat(SyntaxKind::DESC_KW);
+    }
     if p.eat(SyntaxKind::NULLS_KW) {
         let _ = p.eat(SyntaxKind::FIRST_KW) || p.eat(SyntaxKind::LAST_KW);
     }

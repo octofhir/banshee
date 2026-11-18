@@ -4,12 +4,14 @@
 //! it touches (and any CTEs) as children.
 
 use banshee_syntax::{SyntaxKind, SyntaxNode};
-use lsp_types::{DocumentSymbol, SymbolKind};
-
-use crate::convert::LineIndex;
+use lsp_types::{DocumentSymbol, Range, SymbolKind};
+use text_size::TextRange;
 
 /// Builds the document outline for a parsed tree.
-pub fn document_symbols(root: &SyntaxNode, index: &LineIndex) -> Vec<DocumentSymbol> {
+pub fn document_symbols(
+    root: &SyntaxNode,
+    to_range: impl Fn(TextRange) -> Range,
+) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
     for child in root.children() {
         let Some(label) = statement_label(child.kind()) else {
@@ -26,8 +28,8 @@ pub fn document_symbols(root: &SyntaxNode, index: &LineIndex) -> Vec<DocumentSym
             name,
             SymbolKind::FUNCTION,
             child,
-            index,
-            statement_children(child, index),
+            &to_range,
+            statement_children(child, &to_range),
         ));
     }
     symbols
@@ -44,7 +46,10 @@ fn statement_label(kind: SyntaxKind) -> Option<&'static str> {
 }
 
 /// CTE names and table references within a statement, as child symbols.
-fn statement_children(stmt: &SyntaxNode, index: &LineIndex) -> Vec<DocumentSymbol> {
+fn statement_children(
+    stmt: &SyntaxNode,
+    to_range: &impl Fn(TextRange) -> Range,
+) -> Vec<DocumentSymbol> {
     let mut children = Vec::new();
     for node in stmt.descendants() {
         match node.kind() {
@@ -54,14 +59,14 @@ fn statement_children(stmt: &SyntaxNode, index: &LineIndex) -> Vec<DocumentSymbo
                         name,
                         SymbolKind::NAMESPACE,
                         node,
-                        index,
+                        to_range,
                         vec![],
                     ));
                 }
             }
             SyntaxKind::TABLE_REF => {
                 if let Some(name) = first_ident(node) {
-                    children.push(make_symbol(name, SymbolKind::CLASS, node, index, vec![]));
+                    children.push(make_symbol(name, SymbolKind::CLASS, node, to_range, vec![]));
                 }
             }
             _ => {}
@@ -74,10 +79,10 @@ fn make_symbol(
     name: String,
     kind: SymbolKind,
     node: &SyntaxNode,
-    index: &LineIndex,
+    to_range: &impl Fn(TextRange) -> Range,
     children: Vec<DocumentSymbol>,
 ) -> DocumentSymbol {
-    let range = index.range(node.text_range());
+    let range = to_range(node.text_range());
     #[allow(deprecated)]
     DocumentSymbol {
         name,

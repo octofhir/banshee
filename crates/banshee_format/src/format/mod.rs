@@ -23,8 +23,16 @@ pub fn format(source: &str, config: &FormatConfig) -> String {
 
 /// Formats SQL or returns an error when it cannot be safely formatted.
 pub fn try_format(source: &str, config: &FormatConfig) -> Result<String, FormatError> {
-    let parse = banshee_parser::parse(source);
-    safe::format(source, &parse, Style::Sql(config), |root| {
+    try_format_parsed(source, &banshee_parser::parse(source), config)
+}
+
+/// Formats the source text that produced `parse`.
+pub fn try_format_parsed(
+    source: &str,
+    parse: &Parse,
+    config: &FormatConfig,
+) -> Result<String, FormatError> {
+    safe::format(source, parse, Style::Sql(config), |root| {
         print(root, config)
     })
 }
@@ -32,13 +40,10 @@ pub fn try_format(source: &str, config: &FormatConfig) -> Result<String, FormatE
 /// Formats a parsed SQL tree.
 pub fn format_parse(parse: &Parse, config: &FormatConfig) -> String {
     let source = safe::source_text(&parse.syntax());
-    safe::format(&source, parse, Style::Sql(config), |root| {
-        print(root, config)
-    })
-    .unwrap_or(source)
+    try_format_parsed(&source, parse, config).unwrap_or(source)
 }
 
-fn print(root: &SyntaxNode, config: &FormatConfig) -> String {
+pub(super) fn print(root: &SyntaxNode, config: &FormatConfig) -> String {
     let mut printer = Printer::new(config.clone());
     printer.set_river_width(rules::standard_river_width());
     format_node(root, &mut printer);
@@ -225,7 +230,8 @@ pub fn format_token(token: &SyntaxToken, printer: &mut Printer) {
         | SyntaxKind::SLASH
         | SyntaxKind::PERCENT
         | SyntaxKind::CARET
-        | SyntaxKind::PIPE_PIPE => {
+        | SyntaxKind::PIPE_PIPE
+        | SyntaxKind::GENERIC_OP => {
             printer.write_operator(text);
         }
 

@@ -5,9 +5,18 @@ sidebar:
   order: 2
 ---
 
-`banshee lint` reports findings; `banshee fix` applies every available autofix.
-Output formats: `human` (default, rustc-style), `json`, `github` (PR
-annotations), `sarif` (code scanning).
+`banshee lint` reports findings in `human` (default), `json`, `github` (PR
+annotations), or `sarif` (code scanning).
+
+`banshee fix` applies capitalization fixes by default and preserves function
+names and call-like constructs. Use `--unsafe-fixes` to include rewrites that
+can change SQL behavior. Use `--diff` to preview the selected fixes.
+
+Editor quick fixes use the same SQL and placeholder checks as the CLI.
+They require parseable SQL and skip scripts containing `COPY FROM STDIN`.
+Structural fixes are labelled as potentially changing SQL behavior. Editors
+that support versioned edits apply each fix to the document revision it was
+checked against.
 
 Browse all rules in the [rule reference](/banshee/rules/), or run
 `banshee explain <CODE>`.
@@ -33,3 +42,6 @@ SELECT * FROM c;        -- noqa: enable=AM04
 Use `disable=all` / `enable=all` to gate every rule. An alphabetic token (`AM`)
 matches every code in that family; a full code (`AM04`) matches only itself.
 Suppression is applied by the engine, so the LSP honours it too.
+The formatter preserves the directive's line and any SQL statements that
+share it. This keeps the same findings suppressed after formatting, including
+when `pgformatter.no-comment` is enabled.

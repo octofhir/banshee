@@ -1,83 +1,155 @@
 //! A generic PostgreSQL language server built on the banshee engine.
 //!
-//! Synchronous (no async runtime): the server loop reads JSON-RPC over stdio
-//! via `lsp-server`. A single [`CachedSchemaProvider`], when supplied, drives
-//! schema-aware diagnostics and completion; without one the server still offers
-//! formatting, syntax diagnostics and the lint rules that need no schema.
+//! Each client has a synchronous [`Session`] that handles LSP messages. The
+//! stdio adapter and embedded hosts use the same document and request logic.
 
+mod actions;
 mod convert;
+mod file_uri;
 mod semantic_tokens;
 mod sig_help;
 mod symbols;
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
-use std::error::Error;
+use std::path::Path;
+use std::sync::Arc;
 
-use banshee_completion::providers::FunctionProvider;
-use banshee_config::BansheeConfig;
-use banshee_hir::{
-    Analysis, AnalysisOptions, BuiltinLintPack, Diagnostic as HirDiagnostic, NullSchemaProvider,
-    Resolution, SchemaProvider, analyze_query_with_options, resolve::resolve_column,
-};
+use banshee_completion::providers::{FunctionProvider, SchemaProvider as CompletionSchema};
+use banshee_config::{BansheeConfig, ConfiguredAnalysis, Templated};
+use banshee_hir::{Resolution, SchemaProvider, resolve::resolve_column};
 use banshee_schema::CachedSchemaProvider;
+use banshee_syntax::Parse;
 use banshee_syntax::ast::{AstNode, ColumnRef};
-use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
+use lsp_server::{Connection, ErrorCode, RequestId};
+pub use lsp_server::{Message, Notification, Request, Response};
+pub use lsp_types;
+use lsp_types::request::Request as _;
 use lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
-    CodeActionProviderCapability, CompletionItem, CompletionOptions, CompletionParams,
-    CompletionResponse, Diagnostic, DocumentFormattingParams, DocumentRangeFormattingParams,
-    DocumentSymbolParams, DocumentSymbolResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, MarkupContent, MarkupKind, OneOf, Position, PublishDiagnosticsParams,
-    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities,
-    SignatureHelpOptions, SignatureHelpParams, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextEdit, Uri, WorkspaceEdit,
+    ClientCapabilities, CodeAction, CodeActionKind, CodeActionOptions, CodeActionParams,
+    CodeActionProviderCapability, CompletionList, CompletionOptions, CompletionParams,
+    CompletionResponse, Diagnostic, DiagnosticSeverity, DocumentFormattingParams,
+    DocumentRangeFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, Hover,
+    HoverContents, HoverParams, HoverProviderCapability, InitializeParams, MarkupContent,
+    MarkupKind, OneOf, Position, PublishDiagnosticsParams, SemanticTokensFullOptions,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelpOptions,
+    SignatureHelpParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    Uri,
     notification::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
         PublishDiagnostics,
     },
     request::{
-        CodeActionRequest, Completion, DocumentSymbolRequest, Formatting, HoverRequest,
-        RangeFormatting, SemanticTokensFullRequest, SignatureHelpRequest,
+        CodeActionRequest, CodeActionResolveRequest, Completion, DocumentSymbolRequest, Formatting,
+        HoverRequest, RangeFormatting, SemanticTokensFullRequest, SignatureHelpRequest,
     },
 };
-use text_size::TextSize;
+use text_size::{TextRange, TextSize};
 
+use actions::ActionSupport;
 use convert::LineIndex;
 
-/// Runs the language server over stdio until the client disconnects.
+/// Schema data used for analysis, completion, and signature help.
+pub trait DocumentSchema: SchemaProvider + CompletionSchema + FunctionProvider {}
+
+impl<T: SchemaProvider + CompletionSchema + FunctionProvider> DocumentSchema for T {}
+
+/// Configuration and optional database schema for a document.
+#[derive(Default)]
+pub struct DocumentSettings {
+    pub config: BansheeConfig,
+    pub schema: Option<Arc<dyn DocumentSchema>>,
+}
+
+impl DocumentSettings {
+    /// Builds settings from a cached schema snapshot.
+    pub fn from_cache(config: BansheeConfig, schema: Option<CachedSchemaProvider>) -> Self {
+        Self {
+            config,
+            schema: schema.map(|schema| Arc::new(schema) as Arc<dyn DocumentSchema>),
+        }
+    }
+}
+
+type SettingsResolver = Box<dyn FnMut(&Uri) -> anyhow::Result<Arc<DocumentSettings>> + Send>;
+
+fn fixed_settings(config: BansheeConfig, schema: Option<CachedSchemaProvider>) -> SettingsResolver {
+    let settings = Arc::new(DocumentSettings::from_cache(config, schema));
+    Box::new(move |_| Ok(Arc::clone(&settings)))
+}
+
+/// Runs the language server over stdio with fixed settings for all documents.
 pub fn run_stdio(
     config: BansheeConfig,
     schema: Option<CachedSchemaProvider>,
 ) -> anyhow::Result<()> {
-    let (connection, io_threads) = Connection::stdio();
-    let capabilities = serde_json::to_value(server_capabilities())?;
-    let _init = connection.initialize(capabilities)?;
-
-    let mut server = Server {
-        config,
-        schema,
-        docs: HashMap::new(),
-        connection,
-    };
-    let result = server.run();
-    // Drop the server (and its connection sender) so the writer thread sees the
-    // channel close; otherwise `join` blocks forever.
-    drop(server);
-    io_threads.join()?;
-    result
+    run_stdio_session(fixed_settings(config, schema))
 }
 
-fn server_capabilities() -> ServerCapabilities {
+/// Runs the language server over stdio and resolves settings for each open
+/// document revision. The resolver receives the local file path when available.
+pub fn run_stdio_with_settings(
+    mut resolve: impl FnMut(Option<&Path>) -> anyhow::Result<Arc<DocumentSettings>> + Send + 'static,
+) -> anyhow::Result<()> {
+    run_stdio_session(move |uri| resolve(file_uri::local_file_path(uri).as_deref()))
+}
+
+fn run_stdio_session(
+    resolve: impl FnMut(&Uri) -> anyhow::Result<Arc<DocumentSettings>> + Send + 'static,
+) -> anyhow::Result<()> {
+    let (connection, io_threads) = Connection::stdio();
+    let result = serve_stdio(&connection, resolve);
+    // Release the channels before waiting for the transport threads.
+    drop(connection);
+    result?;
+    Ok(io_threads.join()?)
+}
+
+fn serve_stdio(
+    connection: &Connection,
+    resolve: impl FnMut(&Uri) -> anyhow::Result<Arc<DocumentSettings>> + Send + 'static,
+) -> anyhow::Result<()> {
+    let capabilities = serde_json::to_value(server_capabilities())?;
+    let init: InitializeParams = serde_json::from_value(connection.initialize(capabilities)?)?;
+
+    let mut session = Session::new(&init.capabilities, resolve);
+    while let Ok(message) = connection.receiver.recv() {
+        if let Message::Request(request) = &message
+            && connection.handle_shutdown(request)?
+        {
+            break;
+        }
+        match session.handle_message(message) {
+            Ok(Some(reply)) => connection.sender.send(reply)?,
+            Ok(None) => {}
+            Err(error) => eprintln!("warning: could not apply LSP notification: {error}"),
+        }
+    }
+    Ok(())
+}
+
+/// Capabilities to advertise when initializing a Banshee session.
+pub fn server_capabilities() -> ServerCapabilities {
     ServerCapabilities {
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        text_document_sync: Some(TextDocumentSyncCapability::Options(
+            TextDocumentSyncOptions {
+                open_close: Some(true),
+                change: Some(TextDocumentSyncKind::INCREMENTAL),
+                ..Default::default()
+            },
+        )),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec![".".into(), " ".into(), "(".into(), ",".into()]),
             ..Default::default()
         }),
         document_formatting_provider: Some(OneOf::Left(true)),
         document_range_formatting_provider: Some(OneOf::Left(true)),
-        code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+        code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
+            code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+            resolve_provider: Some(true),
+            ..Default::default()
+        })),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         signature_help_provider: Some(SignatureHelpOptions {
@@ -99,391 +171,385 @@ fn server_capabilities() -> ServerCapabilities {
     }
 }
 
-/// A cached, analyzed document. Recomputed once per edit, then shared by
-/// diagnostics, hover and code-action requests that fire on the same revision.
+/// The source, syntax and analysis of a single document revision.
 struct DocEntry {
-    text: String,
-    /// Lint findings plus parse errors, already filtered by rule selection.
-    diagnostics: Vec<HirDiagnostic>,
-    /// Resolved scope, used for hover.
-    analysis: Analysis,
+    version: i32,
+    parse: Parse,
+    native_parse: OnceCell<Parse>,
+    index: LineIndex,
+    templated: Option<Templated>,
+    analysis: ConfiguredAnalysis,
+    settings: Arc<DocumentSettings>,
 }
 
-struct Server {
-    config: BansheeConfig,
-    schema: Option<CachedSchemaProvider>,
-    docs: HashMap<Uri, DocEntry>,
-    connection: Connection,
+enum OpenDocument {
+    Analyzed(Box<DocEntry>),
+    Unconfigured { version: i32, index: LineIndex },
+    OutOfSync { version: i32 },
 }
 
-impl Server {
-    fn run(&mut self) -> anyhow::Result<()> {
-        // Drain the receiver. `recv` errors only when the channel is closed.
-        while let Ok(msg) = self.connection.receiver.recv() {
-            match msg {
-                Message::Request(req) => {
-                    if self.connection.handle_shutdown(&req)? {
-                        return Ok(());
-                    }
-                    self.handle_request(req)?;
-                }
-                Message::Notification(note) => self.handle_notification(note)?,
-                Message::Response(_) => {}
-            }
+impl OpenDocument {
+    fn version(&self) -> i32 {
+        match self {
+            Self::Analyzed(entry) => entry.version,
+            Self::Unconfigured { version, .. } | Self::OutOfSync { version } => *version,
         }
-        Ok(())
     }
 
-    fn handle_request(&mut self, req: Request) -> anyhow::Result<()> {
-        let req = match cast::<Completion>(req) {
-            Ok((id, params)) => return self.on_completion(id, params),
-            Err(req) => req,
-        };
-        let req = match cast::<Formatting>(req) {
-            Ok((id, params)) => return self.on_formatting(id, params),
-            Err(req) => req,
-        };
-        let req = match cast::<RangeFormatting>(req) {
-            Ok((id, params)) => return self.on_range_formatting(id, params),
-            Err(req) => req,
-        };
-        let req = match cast::<CodeActionRequest>(req) {
-            Ok((id, params)) => return self.on_code_action(id, params),
-            Err(req) => req,
-        };
-        let req = match cast::<HoverRequest>(req) {
-            Ok((id, params)) => return self.on_hover(id, params),
-            Err(req) => req,
-        };
-        let req = match cast::<DocumentSymbolRequest>(req) {
-            Ok((id, params)) => return self.on_document_symbol(id, params),
-            Err(req) => req,
-        };
-        let req = match cast::<SemanticTokensFullRequest>(req) {
-            Ok((id, params)) => return self.on_semantic_tokens(id, params),
-            Err(req) => req,
-        };
-        let req = match cast::<SignatureHelpRequest>(req) {
-            Ok((id, params)) => return self.on_signature_help(id, params),
-            Err(req) => req,
-        };
-        // Unhandled method: reply with an empty result so the client is not left
-        // waiting.
-        self.respond(Response::new_ok(req.id, serde_json::Value::Null))
+    fn index(&self) -> Option<&LineIndex> {
+        match self {
+            Self::Analyzed(entry) => Some(&entry.index),
+            Self::Unconfigured { index, .. } => Some(index),
+            Self::OutOfSync { .. } => None,
+        }
+    }
+}
+
+impl DocEntry {
+    fn parsed_text(&self) -> &str {
+        self.templated
+            .as_ref()
+            .map_or(self.index.text(), Templated::text)
     }
 
-    fn handle_notification(&mut self, note: lsp_server::Notification) -> anyhow::Result<()> {
+    fn parsed_offset(&self, pos: Position) -> TextSize {
+        let offset = TextSize::from(self.index.offset(pos));
+        self.templated
+            .as_ref()
+            .map_or(offset, |source| source.rendered_offset(offset))
+    }
+
+    fn source_range(&self, range: TextRange) -> TextRange {
+        self.templated
+            .as_ref()
+            .map_or(range, |source| source.map_range(range))
+    }
+
+    fn format_edits(&self, selection: Option<TextRange>) -> Vec<lsp_types::TextEdit> {
+        let source = self.index.text();
+        let template = self.templated.as_ref().map(|text| (text, &self.parse));
+        let native = if template.is_some() {
+            self.native_parse
+                .get_or_init(|| banshee_parser::parse(source))
+        } else {
+            &self.parse
+        };
+        self.settings
+            .config
+            .format_parsed_edits(source, native, template, selection)
+            .into_iter()
+            .map(|edit| self.index.replacement(edit.range, &edit.new_text))
+            .collect()
+    }
+}
+
+/// One initialized client's documents, settings resolver, and LSP features.
+///
+/// The host handles LSP initialization and shutdown, and feeds messages in
+/// arrival order. A session does synchronous work and can be moved to a
+/// blocking worker. Give each client its own session.
+pub struct Session {
+    settings_for: SettingsResolver,
+    docs: HashMap<Uri, OpenDocument>,
+    actions: ActionSupport,
+}
+
+impl Session {
+    fn doc(&self, uri: &Uri) -> Option<&DocEntry> {
+        match self.docs.get(uri)? {
+            OpenDocument::Analyzed(entry) => Some(entry),
+            _ => None,
+        }
+    }
+
+    /// Starts a session with client capabilities and a resolver that receives
+    /// the original document URI on each open or change.
+    pub fn new(
+        capabilities: &ClientCapabilities,
+        resolve: impl FnMut(&Uri) -> anyhow::Result<Arc<DocumentSettings>> + Send + 'static,
+    ) -> Self {
+        Self {
+            settings_for: Box::new(resolve),
+            docs: HashMap::new(),
+            actions: ActionSupport::from_client(capabilities),
+        }
+    }
+
+    /// Returns the response or notification to send to this client. Malformed
+    /// notification parameters return an error to the host.
+    pub fn handle_message(&mut self, message: Message) -> anyhow::Result<Option<Message>> {
+        match message {
+            Message::Request(request) => Ok(Some(Message::Response(self.handle_request(request)))),
+            Message::Notification(note) => {
+                Ok(self.handle_notification(note)?.map(Message::Notification))
+            }
+            Message::Response(_) => Ok(None),
+        }
+    }
+
+    fn handle_request(&self, req: Request) -> Response {
+        match req.method.as_str() {
+            Completion::METHOD => respond(req, |id, p| self.on_completion(id, p)),
+            Formatting::METHOD => respond(req, |id, p| self.on_formatting(id, p)),
+            RangeFormatting::METHOD => respond(req, |id, p| self.on_range_formatting(id, p)),
+            CodeActionRequest::METHOD => respond(req, |id, p| self.on_code_action(id, p)),
+            CodeActionResolveRequest::METHOD => {
+                respond(req, |id, p| self.on_code_action_resolve(id, p))
+            }
+            HoverRequest::METHOD => respond(req, |id, p| self.on_hover(id, p)),
+            DocumentSymbolRequest::METHOD => respond(req, |id, p| self.on_document_symbol(id, p)),
+            SemanticTokensFullRequest::METHOD => {
+                respond(req, |id, p| self.on_semantic_tokens(id, p))
+            }
+            SignatureHelpRequest::METHOD => respond(req, |id, p| self.on_signature_help(id, p)),
+            _ => Response::new_err(req.id, ErrorCode::MethodNotFound as i32, req.method),
+        }
+    }
+
+    fn handle_notification(&mut self, note: Notification) -> anyhow::Result<Option<Notification>> {
         match note.method.as_str() {
             DidOpenTextDocument::METHOD => {
                 let p: lsp_types::DidOpenTextDocumentParams = serde_json::from_value(note.params)?;
-                let uri = p.text_document.uri.clone();
-                self.update_doc(uri.clone(), p.text_document.text);
-                self.publish_diagnostics(&uri)?;
+                Ok(Some(self.sync_doc(
+                    p.text_document.uri,
+                    p.text_document.version,
+                    LineIndex::new(p.text_document.text),
+                )))
             }
             DidChangeTextDocument::METHOD => {
                 let p: lsp_types::DidChangeTextDocumentParams =
                     serde_json::from_value(note.params)?;
-                // FULL sync: last change holds the whole document.
-                if let Some(change) = p.content_changes.into_iter().last() {
-                    let uri = p.text_document.uri.clone();
-                    self.update_doc(uri.clone(), change.text);
-                    self.publish_diagnostics(&uri)?;
+                let uri = p.text_document.uri;
+                let version = p.text_document.version;
+                let Some(document) = self.docs.get(&uri) else {
+                    return Ok(None);
+                };
+                if version <= document.version() || p.content_changes.is_empty() {
+                    return Ok(None);
                 }
+                let index = match LineIndex::apply_changes(document.index(), p.content_changes) {
+                    Ok(index) => index,
+                    Err(error) => {
+                        self.docs.insert(uri, OpenDocument::OutOfSync { version });
+                        return Err(error);
+                    }
+                };
+                Ok(Some(self.sync_doc(uri, version, index)))
             }
             DidCloseTextDocument::METHOD => {
                 let p: lsp_types::DidCloseTextDocumentParams = serde_json::from_value(note.params)?;
-                self.docs.remove(&p.text_document.uri);
+                let uri = p.text_document.uri;
+                self.docs.remove(&uri);
+                Ok(Some(publish_diagnostics(PublishDiagnosticsParams {
+                    uri,
+                    diagnostics: Vec::new(),
+                    version: None,
+                })))
             }
-            _ => {}
+            _ => Ok(None),
         }
-        Ok(())
     }
 
     // ---- analysis -----------------------------------------------------------
 
-    fn hir_provider(&self) -> Option<&dyn SchemaProvider> {
-        self.schema.as_ref().map(|p| p as &dyn SchemaProvider)
-    }
-
-    fn lint_options(&self) -> AnalysisOptions {
-        let mut packs = vec![
-            BuiltinLintPack::Core,
-            BuiltinLintPack::Jsonb,
-            BuiltinLintPack::Convention,
-            BuiltinLintPack::Migration,
-        ];
-        if self.config.lint.is_rule_enabled("CP01") || self.config.lint.is_rule_enabled("CP02") {
-            packs.push(BuiltinLintPack::Capitalisation);
-        }
-        AnalysisOptions::new().with_builtin_lint_packs(packs)
-    }
-
     /// Parses and analyzes `text`, caching the result under `uri`.
-    fn update_doc(&mut self, uri: Uri, text: String) {
-        let parse = banshee_parser::parse(&text);
-        let options = self.lint_options();
-        let null = NullSchemaProvider;
-        let provider = self.hir_provider().unwrap_or(&null);
-        let schema_aware = self.schema.is_some();
-
-        let analysis = analyze_query_with_options(&parse, provider, &options);
-
-        let mut diagnostics: Vec<HirDiagnostic> = analysis
-            .diagnostics
-            .iter()
-            .filter(|d| match d.code {
-                None => schema_aware,
-                // Reference checks (RF*) need a schema; suppress them without one.
-                Some(code) if code.is_reference() => {
-                    schema_aware && self.config.lint.is_rule_enabled(code.as_str())
-                }
-                Some(code) => self.config.lint.is_rule_enabled(code.as_str()),
-            })
-            .cloned()
-            .collect();
-        for err in parse.errors() {
-            diagnostics.push(HirDiagnostic::error(err.message.clone()).with_range(err.range));
-        }
+    fn update_doc(&mut self, uri: Uri, version: i32, index: LineIndex) -> anyhow::Result<()> {
+        let settings = match (self.settings_for)(&uri) {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.docs
+                    .insert(uri, OpenDocument::Unconfigured { version, index });
+                return Err(error);
+            }
+        };
+        let templated = settings.config.templater.render(index.text());
+        let parsed_text = templated.as_ref().map_or(index.text(), Templated::text);
+        let parse = banshee_parser::parse(parsed_text);
+        let analysis = settings.config.lint.analyze(
+            &parse,
+            settings.schema.as_deref().map(|p| p as &dyn SchemaProvider),
+            Default::default(),
+            templated.as_ref(),
+        );
 
         self.docs.insert(
             uri,
-            DocEntry {
-                text,
-                diagnostics,
+            OpenDocument::Analyzed(Box::new(DocEntry {
+                version,
+                parse,
+                native_parse: OnceCell::new(),
+                index,
+                templated,
                 analysis,
-            },
+                settings,
+            })),
         );
+        Ok(())
     }
 
-    fn publish_diagnostics(&self, uri: &Uri) -> anyhow::Result<()> {
-        let Some(entry) = self.docs.get(uri) else {
-            return Ok(());
+    fn sync_doc(&mut self, uri: Uri, version: i32, index: LineIndex) -> Notification {
+        let diagnostics = match self.update_doc(uri.clone(), version, index) {
+            Ok(()) => self.doc(&uri).map_or_else(Vec::new, |entry| {
+                entry
+                    .analysis
+                    .diagnostics
+                    .iter()
+                    .map(|d| convert::diagnostic(&entry.index, d))
+                    .collect()
+            }),
+            Err(error) => {
+                vec![Diagnostic {
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    source: Some("banshee".to_owned()),
+                    message: format!("Could not load Banshee settings: {error:#}"),
+                    ..Default::default()
+                }]
+            }
         };
-        let index = LineIndex::new(&entry.text);
-        let diags: Vec<Diagnostic> = entry
-            .diagnostics
-            .iter()
-            .map(|d| convert::diagnostic(&index, d))
-            .collect();
-
-        let params = PublishDiagnosticsParams {
-            uri: uri.clone(),
-            diagnostics: diags,
-            version: None,
-        };
-        self.notify::<PublishDiagnostics>(params)
+        publish_diagnostics(PublishDiagnosticsParams {
+            uri,
+            diagnostics,
+            version: Some(version),
+        })
     }
 
     // ---- requests -----------------------------------------------------------
 
-    fn on_completion(&mut self, id: RequestId, params: CompletionParams) -> anyhow::Result<()> {
+    fn on_completion(&self, id: RequestId, params: CompletionParams) -> Response {
         let uri = params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
-        let items = self
-            .docs
-            .get(&uri)
-            .map(|entry| self.completions(&entry.text, pos))
-            .unwrap_or_default();
-        self.respond(Response::new_ok(id, CompletionResponse::Array(items)))
+        let result = self
+            .doc(&uri)
+            .map(|entry| self.completions(entry, pos))
+            .unwrap_or_else(|| CompletionResponse::Array(Vec::new()));
+        Response::new_ok(id, result)
     }
 
-    fn completions(&self, text: &str, pos: Position) -> Vec<CompletionItem> {
-        let index = LineIndex::new(text);
-        let offset = TextSize::from(index.offset(pos));
-        let mut request = banshee_completion::CompletionRequest::new(text, offset);
-        if let Some(p) = &self.schema {
+    fn completions(&self, entry: &DocEntry, pos: Position) -> CompletionResponse {
+        let settings = &entry.settings.config.completion;
+        let mut request = banshee_completion::CompletionRequest::new(
+            entry.parsed_text(),
+            entry.parsed_offset(pos),
+        )
+        .with_parse(&entry.parse)
+        .with_keywords(settings.keywords)
+        .with_functions(settings.functions)
+        .with_limit(settings.max_items);
+        if let Some(p) = entry.settings.schema.as_deref() {
             request = request.with_schema_provider(p).with_function_provider(p);
         }
         let result = banshee_completion::complete(request);
-        result
+        let items = result
             .items
             .into_iter()
-            .map(|item| CompletionItem {
-                label: item.label,
-                detail: item.detail,
-                insert_text: item.insert_text,
-                ..Default::default()
+            .map(convert::completion_item)
+            .collect();
+        if result.is_incomplete {
+            CompletionResponse::List(CompletionList {
+                is_incomplete: true,
+                items,
             })
-            .collect()
+        } else {
+            CompletionResponse::Array(items)
+        }
     }
 
-    fn on_formatting(
-        &mut self,
-        id: RequestId,
-        params: DocumentFormattingParams,
-    ) -> anyhow::Result<()> {
+    fn on_formatting(&self, id: RequestId, params: DocumentFormattingParams) -> Response {
         let uri = params.text_document.uri;
         let edits = self
-            .docs
-            .get(&uri)
-            .map(|entry| {
-                let index = LineIndex::new(&entry.text);
-                self.config
-                    .format_edits(&entry.text)
-                    .iter()
-                    .map(|e| TextEdit {
-                        range: index.range(e.range),
-                        new_text: e.new_text.clone(),
-                    })
-                    .collect::<Vec<_>>()
-            })
+            .doc(&uri)
+            .map(|entry| entry.format_edits(None))
             .unwrap_or_default();
-        self.respond(Response::new_ok(id, edits))
+        Response::new_ok(id, edits)
     }
 
     fn on_range_formatting(
-        &mut self,
+        &self,
         id: RequestId,
         params: DocumentRangeFormattingParams,
-    ) -> anyhow::Result<()> {
+    ) -> Response {
         let uri = params.text_document.uri;
         let edits = self
-            .docs
-            .get(&uri)
+            .doc(&uri)
             .map(|entry| {
-                let index = LineIndex::new(&entry.text);
-                let start = index.offset(params.range.start);
-                let end = index.offset(params.range.end);
-                self.config
-                    .format_range(&entry.text, start, end)
-                    .iter()
-                    .map(|e| TextEdit {
-                        range: index.range(e.range),
-                        new_text: e.new_text.clone(),
-                    })
-                    .collect::<Vec<_>>()
+                let start = entry.index.offset(params.range.start);
+                let end = entry.index.offset(params.range.end);
+                if start < end {
+                    entry.format_edits(Some(TextRange::new(start.into(), end.into())))
+                } else {
+                    Vec::new()
+                }
             })
             .unwrap_or_default();
-        self.respond(Response::new_ok(id, edits))
+        Response::new_ok(id, edits)
     }
 
-    fn on_code_action(&mut self, id: RequestId, params: CodeActionParams) -> anyhow::Result<()> {
-        let uri = params.text_document.uri.clone();
+    fn on_code_action(&self, id: RequestId, params: CodeActionParams) -> Response {
         let actions = self
-            .docs
-            .get(&uri)
-            .map(|entry| code_actions(&uri, entry, &params))
+            .doc(&params.text_document.uri)
+            .map(|entry| actions::code_actions(entry, &params, &self.actions))
             .unwrap_or_default();
-        self.respond(Response::new_ok(id, actions))
+        Response::new_ok(id, actions)
     }
 
-    fn on_document_symbol(
-        &mut self,
-        id: RequestId,
-        params: DocumentSymbolParams,
-    ) -> anyhow::Result<()> {
+    fn on_code_action_resolve(&self, id: RequestId, action: CodeAction) -> Response {
+        match actions::resolve(action, self) {
+            Ok(action) => Response::new_ok(id, action),
+            Err((code, message)) => Response::new_err(id, code as i32, message),
+        }
+    }
+
+    fn on_document_symbol(&self, id: RequestId, params: DocumentSymbolParams) -> Response {
         let uri = params.text_document.uri;
         let symbols = self
-            .docs
-            .get(&uri)
+            .doc(&uri)
             .map(|entry| {
-                let parse = banshee_parser::parse(&entry.text);
-                let index = LineIndex::new(&entry.text);
-                symbols::document_symbols(&parse.syntax(), &index)
+                symbols::document_symbols(&entry.parse.syntax(), |range| {
+                    entry.index.range(entry.source_range(range))
+                })
             })
             .unwrap_or_default();
-        self.respond(Response::new_ok(
-            id,
-            DocumentSymbolResponse::Nested(symbols),
-        ))
+        Response::new_ok(id, DocumentSymbolResponse::Nested(symbols))
     }
 
-    fn on_signature_help(
-        &mut self,
-        id: RequestId,
-        params: SignatureHelpParams,
-    ) -> anyhow::Result<()> {
+    fn on_signature_help(&self, id: RequestId, params: SignatureHelpParams) -> Response {
         let uri = params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
-        let help = self.docs.get(&uri).and_then(|entry| {
-            let parse = banshee_parser::parse(&entry.text);
-            let index = LineIndex::new(&entry.text);
-            let offset = index.offset(pos);
-            let provider = self.schema.as_ref().map(|p| p as &dyn FunctionProvider);
-            sig_help::signature_help(&parse.syntax(), offset, provider)
+        let help = self.doc(&uri).and_then(|entry| {
+            let offset = u32::from(entry.parsed_offset(pos));
+            let provider = entry
+                .settings
+                .schema
+                .as_deref()
+                .map(|p| p as &dyn FunctionProvider);
+            sig_help::signature_help(&entry.parse.syntax(), offset, provider)
         });
-        self.respond(Response::new_ok(id, help))
+        Response::new_ok(id, help)
     }
 
-    fn on_semantic_tokens(
-        &mut self,
-        id: RequestId,
-        params: SemanticTokensParams,
-    ) -> anyhow::Result<()> {
+    fn on_semantic_tokens(&self, id: RequestId, params: SemanticTokensParams) -> Response {
         let uri = params.text_document.uri;
-        let tokens = self.docs.get(&uri).map(|entry| {
-            let parse = banshee_parser::parse(&entry.text);
-            let index = LineIndex::new(&entry.text);
-            semantic_tokens::semantic_tokens(&parse.syntax(), &index)
+        let tokens = self.doc(&uri).map(|entry| {
+            semantic_tokens::semantic_tokens(
+                &entry.parse.syntax(),
+                &entry.index,
+                entry.templated.as_ref(),
+            )
         });
         let result = tokens.map(SemanticTokensResult::Tokens);
-        self.respond(Response::new_ok(id, result))
+        Response::new_ok(id, result)
     }
 
-    fn on_hover(&mut self, id: RequestId, params: HoverParams) -> anyhow::Result<()> {
+    fn on_hover(&self, id: RequestId, params: HoverParams) -> Response {
         let uri = params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
-        let hover = self.docs.get(&uri).and_then(|entry| hover_at(entry, pos));
-        self.respond(Response::new_ok(id, hover))
-    }
-
-    // ---- transport ----------------------------------------------------------
-
-    fn respond(&self, response: Response) -> anyhow::Result<()> {
-        self.connection
-            .sender
-            .send(Message::Response(response))
-            .map_err(|e| anyhow::anyhow!("failed to send response: {e}"))
-    }
-
-    fn notify<N: lsp_types::notification::Notification>(
-        &self,
-        params: N::Params,
-    ) -> anyhow::Result<()> {
-        let note = lsp_server::Notification::new(N::METHOD.to_string(), params);
-        self.connection
-            .sender
-            .send(Message::Notification(note))
-            .map_err(|e| anyhow::anyhow!("failed to send notification: {e}"))
+        let hover = self.doc(&uri).and_then(|entry| hover_at(entry, pos));
+        Response::new_ok(id, hover)
     }
 }
 
-/// Builds quick-fix code actions from a document's cached diagnostics that
-/// overlap the requested range.
-fn code_actions(
-    uri: &Uri,
-    entry: &DocEntry,
-    params: &CodeActionParams,
-) -> Vec<CodeActionOrCommand> {
-    let index = LineIndex::new(&entry.text);
-    let want = params.range;
-    let mut actions = Vec::new();
-
-    for diag in &entry.diagnostics {
-        let Some(range) = diag.range else { continue };
-        let lsp_range = index.range(range);
-        if lsp_range.end < want.start || lsp_range.start > want.end {
-            continue;
-        }
-        for fix in &diag.fixes {
-            let edits: Vec<TextEdit> = fix
-                .edits
-                .iter()
-                .map(|e| convert::text_edit(&index, e))
-                .collect();
-            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                title: fix.title.clone(),
-                kind: Some(CodeActionKind::QUICKFIX),
-                diagnostics: Some(vec![convert::diagnostic(&index, diag)]),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(HashMap::from([(uri.clone(), edits)])),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }));
-        }
-    }
-    actions
+fn publish_diagnostics(params: PublishDiagnosticsParams) -> Notification {
+    Notification::new(PublishDiagnostics::METHOD.to_owned(), params)
 }
 
 /// Produces hover content for a column reference under the cursor.
@@ -492,11 +558,10 @@ fn code_actions(
 /// against the analyzed scope. Resolution needs a schema, so hover is empty
 /// when the server runs schema-less.
 fn hover_at(entry: &DocEntry, pos: Position) -> Option<Hover> {
-    let index = LineIndex::new(&entry.text);
-    let offset = index.offset(pos);
+    let index = &entry.index;
+    let offset = u32::from(entry.parsed_offset(pos));
 
-    let parse = banshee_parser::parse(&entry.text);
-    let root = parse.syntax();
+    let root = entry.parse.syntax();
 
     // Innermost ColumnRef whose range covers the offset.
     let column_ref = root
@@ -516,7 +581,8 @@ fn hover_at(entry: &DocEntry, pos: Position) -> Option<Hover> {
     if let Some(t) = column_ref.table() {
         parts.push(t.text().to_string());
     }
-    parts.push(column_ref.column()?.text().to_string());
+    let column = column_ref.column()?;
+    parts.push(column.text().to_string());
 
     let (resolved, ambiguous) = match resolve_column(&parts, &entry.analysis.scope) {
         Resolution::Resolved(c) => (c, false),
@@ -553,29 +619,20 @@ fn hover_at(entry: &DocEntry, pos: Position) -> Option<Hover> {
             kind: MarkupKind::Markdown,
             value,
         }),
-        range: Some(index.range(column_ref.syntax().text_range())),
+        range: Some(index.range(entry.source_range(TextRange::new(
+            column_ref.syntax().text_range().start(),
+            column.text_range().end(),
+        )))),
     })
 }
 
-/// Attempts to extract a typed request; returns the original on method mismatch.
-fn cast<R>(req: Request) -> Result<(RequestId, R::Params), Request>
-where
-    R: lsp_types::request::Request,
-    R::Params: serde::de::DeserializeOwned,
-{
-    match req.extract::<R::Params>(R::METHOD) {
-        Ok(value) => Ok(value),
-        Err(ExtractError::MethodMismatch(req)) => Err(req),
-        Err(ExtractError::JsonError { method, error }) => {
-            // Malformed params: log and swallow by faking a mismatch so the
-            // dispatcher can fall through to the null response.
-            let _: (&str, Box<dyn Error>) = (&method, Box::new(error));
-            Err(Request {
-                id: RequestId::from(0),
-                method: String::new(),
-                params: serde_json::Value::Null,
-            })
-        }
+fn respond<P: serde::de::DeserializeOwned>(
+    req: Request,
+    handle: impl FnOnce(RequestId, P) -> Response,
+) -> Response {
+    match serde_json::from_value(req.params) {
+        Ok(params) => handle(req.id, params),
+        Err(error) => Response::new_err(req.id, ErrorCode::InvalidParams as i32, error.to_string()),
     }
 }
 
@@ -583,6 +640,7 @@ where
 mod tests {
     use super::*;
     use banshee_schema::{ColumnEntry, SchemaSnapshot, TableEntry, TableKind};
+    use serde_json::json;
 
     fn provider() -> CachedSchemaProvider {
         let mut snap = SchemaSnapshot::new("fp", "public");
@@ -604,15 +662,21 @@ mod tests {
 
     fn entry_for(text: &str, p: &CachedSchemaProvider) -> DocEntry {
         let parse = banshee_parser::parse(text);
-        let analysis = analyze_query_with_options(
-            &parse,
-            p as &dyn SchemaProvider,
-            &AnalysisOptions::default(),
-        );
+        let analysis =
+            BansheeConfig::default()
+                .lint
+                .analyze(&parse, Some(p), Default::default(), None);
         DocEntry {
-            text: text.to_string(),
-            diagnostics: Vec::new(),
+            version: 1,
+            parse,
+            native_parse: OnceCell::new(),
+            index: LineIndex::new(text),
+            templated: None,
             analysis,
+            settings: Arc::new(DocumentSettings {
+                config: BansheeConfig::default(),
+                schema: Some(Arc::new(p.clone())),
+            }),
         }
     }
 
@@ -621,9 +685,8 @@ mod tests {
         let p = provider();
         let text = "SELECT id FROM patient";
         let entry = entry_for(text, &p);
-        let index = LineIndex::new(text);
         // 'id' starts at byte offset 7.
-        let pos = index.position(7);
+        let pos = entry.index.position(7);
         let hover = hover_at(&entry, pos).expect("hover present on resolved column");
         if let HoverContents::Markup(m) = hover.contents {
             assert!(m.value.contains("id"), "{}", m.value);
@@ -638,9 +701,470 @@ mod tests {
         let p = provider();
         let text = "SELECT id FROM patient";
         let entry = entry_for(text, &p);
-        let index = LineIndex::new(text);
         // Offset 0 is the SELECT keyword, not a column reference.
-        let pos = index.position(0);
+        let pos = entry.index.position(0);
         assert!(hover_at(&entry, pos).is_none());
+    }
+
+    #[test]
+    fn completion_reports_incomplete_lists_and_item_metadata() -> anyhow::Result<()> {
+        let config = BansheeConfig::from_toml("[completion]\nkeywords = false\nmax-items = 1")?;
+        let mut server = Session::new(&ClientCapabilities::default(), fixed_settings(config, None));
+        let uri: Uri = "file:///completion.sql".parse()?;
+        server.update_doc(uri.clone(), 1, LineIndex::new("SELECT "))?;
+        let CompletionResponse::List(list) = server.completions(
+            server.doc(&uri).expect("analyzed document"),
+            Position::new(0, 7),
+        ) else {
+            panic!("expected a limited completion list");
+        };
+        assert!(list.is_incomplete);
+        assert_eq!(list.items.len(), 1);
+        let item = &list.items[0];
+        assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::FUNCTION));
+        assert!(item.sort_text.is_some());
+        assert!(item.documentation.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn templated_document_uses_source_positions_and_configured_lints() -> anyhow::Result<()> {
+        let config = BansheeConfig::from_toml(
+            r#"
+            [templater]
+            style = "colon"
+            [lint]
+            select = ["CP01"]
+            [lint.rules.CP01]
+            policy = "lower"
+            severity = "info"
+            "#,
+        )?;
+        let mut server = Session::new(
+            &ClientCapabilities::default(),
+            fixed_settings(config, Some(provider())),
+        );
+        let uri: Uri = "file:///template.sql".parse()?;
+        let source = "SELECT :customer_identifier, '😀', id FROM patient";
+        server.update_doc(uri.clone(), 1, LineIndex::new(source))?;
+        let entry = server.doc(&uri).expect("analyzed document");
+        assert!(
+            entry.parse.errors().is_empty(),
+            "{:?}",
+            entry.parse.errors()
+        );
+        let start = source.find("FROM").unwrap() as u32;
+        let from = TextRange::at(start.into(), 4.into());
+        let diagnostic = entry
+            .analysis
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.range == Some(from))
+            .expect("FROM linted at its original position");
+        let published = convert::diagnostic(&entry.index, diagnostic);
+        assert_eq!(
+            published.severity,
+            Some(lsp_types::DiagnosticSeverity::INFORMATION)
+        );
+        assert_eq!(diagnostic.fixes[0].edits[0].range, from);
+        assert_eq!(diagnostic.fixes[0].edits[0].new_text, "from");
+
+        let id = source.find("id FROM").unwrap() as u32;
+        let pos = entry.index.position(id);
+        let hover = hover_at(entry, pos).expect("column hover after the placeholder");
+        assert_eq!(
+            hover.range,
+            Some(entry.index.range(TextRange::at(id.into(), 2.into())))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn formatting_reuses_the_current_revision_and_preserves_native_operators() -> anyhow::Result<()>
+    {
+        let config = BansheeConfig::from_toml(
+            "[format]\nstyle = \"compact\"\n[templater]\nstyle = \"percent\"",
+        )?;
+        let mut server = Session::new(&ClientCapabilities::default(), fixed_settings(config, None));
+        let uri: Uri = "file:///formatting.sql".parse()?;
+        let native = "select  20%s from t;";
+        server.update_doc(uri.clone(), 1, LineIndex::new(native))?;
+        let entry = server.doc(&uri).expect("analyzed document");
+        assert!(entry.templated.is_some());
+        assert!(entry.native_parse.get().is_none());
+        let expected = entry.settings.config.format_edits(native);
+        assert_eq!(
+            entry.format_edits(None),
+            expected
+                .iter()
+                .map(|edit| entry.index.replacement(edit.range, &edit.new_text))
+                .collect::<Vec<_>>()
+        );
+        let original = entry.native_parse.get().expect("cached native parse");
+        assert!(original.errors().is_empty());
+        assert!(!entry.format_edits(None).is_empty());
+        assert!(std::ptr::eq(original, entry.native_parse.get().unwrap()));
+
+        let template = "select  '😀', %s::int;\r\nselect (";
+        server.update_doc(uri.clone(), 2, LineIndex::new(template))?;
+        let entry = server.doc(&uri).expect("analyzed document");
+        assert!(entry.native_parse.get().is_none());
+        assert!(entry.format_edits(None).is_empty());
+        let start = template.find('%').expect("placeholder") as u32;
+        let selection = TextRange::at(start.into(), 2.into());
+        let expected = entry
+            .settings
+            .config
+            .format_range(template, start, start + 2);
+        assert_eq!(expected.len(), 1);
+        assert_eq!(
+            entry.format_edits(Some(selection)),
+            [entry
+                .index
+                .replacement(expected[0].range, &expected[0].new_text)]
+        );
+        assert!(
+            !entry
+                .native_parse
+                .get()
+                .expect("cached original parse")
+                .errors()
+                .is_empty()
+        );
+
+        server.update_doc(uri.clone(), 3, LineIndex::new("select  1"))?;
+        let entry = server.doc(&uri).expect("analyzed document");
+        assert!(entry.templated.is_none());
+        assert!(!entry.format_edits(None).is_empty());
+        assert!(entry.native_parse.get().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostics_and_tokens_track_document_revisions() -> anyhow::Result<()> {
+        let mut server = Session::new(
+            &ClientCapabilities::default(),
+            fixed_settings(BansheeConfig::default(), None),
+        );
+        let uri = "file:///query.sql";
+        let publish = |server: &mut Session, method: &str, params| {
+            let result = server.handle_message(Message::Notification(Notification::new(
+                method.into(),
+                params,
+            )))?;
+            let Some(Message::Notification(note)) = result else {
+                anyhow::bail!("expected a diagnostics notification");
+            };
+            Ok::<_, anyhow::Error>(
+                note.extract::<PublishDiagnosticsParams>(PublishDiagnostics::METHOD)?,
+            )
+        };
+        let opened = publish(
+            &mut server,
+            DidOpenTextDocument::METHOD,
+            json!({"textDocument": {
+                "uri": uri, "languageId": "sql", "version": 5, "text": "select ("
+            }}),
+        )?;
+        assert_eq!(opened.version, Some(5));
+        assert!(!opened.diagnostics.is_empty());
+
+        let changed = publish(
+            &mut server,
+            DidChangeTextDocument::METHOD,
+            json!({
+                "textDocument": {"uri": uri, "version": 8},
+                "contentChanges": [{"text": "\r\nSELECT 1;"}]
+            }),
+        )?;
+        assert_eq!(changed.version, Some(8));
+        assert!(changed.diagnostics.is_empty(), "{:?}", changed.diagnostics);
+
+        let result = server.handle_message(Message::Request(Request::new(
+            1.into(),
+            SemanticTokensFullRequest::METHOD.into(),
+            json!({"textDocument": {"uri": uri}}),
+        )))?;
+        let Some(Message::Response(response)) = result else {
+            anyhow::bail!("expected a semantic tokens response");
+        };
+        assert_eq!(
+            response.response_result.expect("semantic tokens result"),
+            json!({"data": [1, 0, 6, 0, 0, 0, 7, 1, 3, 0, 0, 1, 1, 1, 0]}),
+        );
+
+        let changed = publish(
+            &mut server,
+            DidChangeTextDocument::METHOD,
+            json!({
+                "textDocument": {"uri": uri, "version": 9},
+                "contentChanges": [
+                    {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 1, "character": 0}},
+                     "text": "SELECT '😀';\r\n"},
+                    {"range": {"start": {"line": 0, "character": 8}, "end": {"line": 0, "character": 10}},
+                     "text": "é"},
+                    {"range": {"start": {"line": 1, "character": 7}, "end": {"line": 1, "character": 8}},
+                     "text": "2"}
+                ]
+            }),
+        )?;
+        assert_eq!(changed.version, Some(9));
+        assert!(changed.diagnostics.is_empty());
+        assert!(
+            server
+                .handle_message(change_message(uri, 8, json!([{"text": "SELECT 8;"}])))?
+                .is_none()
+        );
+        assert_eq!(
+            server
+                .doc(&uri.parse()?)
+                .expect("latest document")
+                .index
+                .text(),
+            "SELECT 'é';\r\nSELECT 2;"
+        );
+
+        let closed = publish(
+            &mut server,
+            DidCloseTextDocument::METHOD,
+            json!({"textDocument": {"uri": uri}}),
+        )?;
+        assert!(closed.diagnostics.is_empty());
+        assert!(server.docs.is_empty());
+        assert!(
+            server
+                .handle_message(change_message(uri, 10, json!([{"text": "SELECT 10;"}])))?
+                .is_none()
+        );
+        assert!(server.docs.is_empty());
+        Ok(())
+    }
+
+    fn open_message(uri: &str, version: i32, text: &str) -> Message {
+        Notification::new(
+            DidOpenTextDocument::METHOD.to_owned(),
+            json!({"textDocument": {"uri": uri, "languageId": "sql", "version": version, "text": text}}),
+        )
+        .into()
+    }
+
+    fn change_message(uri: &str, version: i32, changes: serde_json::Value) -> Message {
+        Notification::new(
+            DidChangeTextDocument::METHOD.to_owned(),
+            json!({"textDocument": {"uri": uri, "version": version}, "contentChanges": changes}),
+        )
+        .into()
+    }
+
+    #[test]
+    fn invalid_incremental_batch_requires_a_new_snapshot_for_that_document() -> anyhow::Result<()> {
+        let mut session = Session::new(
+            &ClientCapabilities::default(),
+            fixed_settings(BansheeConfig::default(), None),
+        );
+        let uri = "banshee://workspace/query";
+        let other = "banshee://workspace/other";
+        assert!(
+            session
+                .handle_message(open_message(uri, 1, "SELECT '😀';"))?
+                .is_some()
+        );
+        assert!(
+            session
+                .handle_message(open_message(other, 1, "SELECT 2;"))?
+                .is_some()
+        );
+        let invalid = change_message(
+            uri,
+            2,
+            json!([
+                {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 6}}, "text": "select"},
+                {"range": {"start": {"line": 0, "character": 9}, "end": {"line": 0, "character": 10}}, "text": "x"}
+            ]),
+        );
+        let error = session
+            .handle_message(invalid)
+            .expect_err("split UTF-16 surrogate pair");
+        assert!(error.to_string().contains("invalid UTF-16 change range"));
+        assert!(session.doc(&uri.parse()?).is_none());
+        assert!(session.doc(&other.parse()?).is_some());
+
+        let relative = change_message(
+            uri,
+            3,
+            json!([
+                {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "text": "-- inserted\n"}
+            ]),
+        );
+        assert!(
+            session
+                .handle_message(relative)
+                .expect_err("missing full snapshot")
+                .to_string()
+                .contains("full document")
+        );
+        let recovery = change_message(
+            uri,
+            4,
+            json!([
+                {"text": "SELECT 1;"},
+                {"range": {"start": {"line": 0, "character": 7}, "end": {"line": 0, "character": 8}}, "text": "2"}
+            ]),
+        );
+        assert!(session.handle_message(recovery)?.is_some());
+        let entry = session.doc(&uri.parse()?).expect("resynchronized document");
+        assert_eq!(entry.version, 4);
+        assert_eq!(entry.index.text(), "SELECT 2;");
+        Ok(())
+    }
+
+    #[test]
+    fn settings_errors_keep_the_text_needed_for_future_range_updates() -> anyhow::Result<()> {
+        let mut attempts = 0;
+        let mut session = Session::new(&ClientCapabilities::default(), move |_| {
+            attempts += 1;
+            anyhow::ensure!(attempts != 2, "configuration temporarily unavailable");
+            Ok(Arc::new(DocumentSettings::default()))
+        });
+        let uri = "banshee://workspace/query";
+        assert!(
+            session
+                .handle_message(open_message(uri, 1, "SELECT 1;"))?
+                .is_some()
+        );
+        let broken = change_message(
+            uri,
+            2,
+            json!([
+                {"range": {"start": {"line": 0, "character": 7}, "end": {"line": 0, "character": 8}}, "text": "100"}
+            ]),
+        );
+        let Some(Message::Notification(note)) = session.handle_message(broken)? else {
+            anyhow::bail!("expected a configuration diagnostic");
+        };
+        let diagnostics = note.extract::<PublishDiagnosticsParams>(PublishDiagnostics::METHOD)?;
+        assert_eq!(diagnostics.version, Some(2));
+        assert_eq!(diagnostics.diagnostics.len(), 1);
+        assert!(
+            diagnostics.diagnostics[0]
+                .message
+                .contains("configuration temporarily unavailable")
+        );
+        assert!(session.doc(&uri.parse()?).is_none());
+
+        let corrected = change_message(
+            uri,
+            3,
+            json!([
+                {"range": {"start": {"line": 0, "character": 9}, "end": {"line": 0, "character": 10}}, "text": "2"}
+            ]),
+        );
+        assert!(session.handle_message(corrected)?.is_some());
+        let entry = session.doc(&uri.parse()?).expect("recovered document");
+        assert_eq!(entry.version, 3);
+        assert_eq!(entry.index.text(), "SELECT 102;");
+        Ok(())
+    }
+
+    #[test]
+    fn embedded_sessions_isolate_documents_and_server_supplied_schemas() -> anyhow::Result<()> {
+        fn assert_send<T: Send>() {}
+        assert_send::<Session>();
+
+        let uri = "banshee://console/query";
+        let settings = Arc::new(DocumentSettings {
+            config: BansheeConfig::default(),
+            schema: Some(Arc::new(provider())),
+        });
+        let mut first = Session::new(&ClientCapabilities::default(), move |document| {
+            assert_eq!(document.as_str(), uri);
+            Ok(Arc::clone(&settings))
+        });
+        let mut second = Session::new(
+            &ClientCapabilities::default(),
+            fixed_settings(BansheeConfig::default(), None),
+        );
+        for (session, version) in [(&mut first, 1), (&mut second, 4)] {
+            let opened = session.handle_message(Message::Notification(Notification::new(
+                DidOpenTextDocument::METHOD.to_owned(),
+                json!({"textDocument": {
+                    "uri": uri, "languageId": "sql", "version": version,
+                    "text": "select id from patient"
+                }}),
+            )))?;
+            let Some(Message::Notification(note)) = opened else {
+                anyhow::bail!("expected diagnostics for an embedded document");
+            };
+            let diagnostics =
+                note.extract::<PublishDiagnosticsParams>(PublishDiagnostics::METHOD)?;
+            assert_eq!(diagnostics.version, Some(version));
+        }
+        let hover = || {
+            Message::Request(Request::new(
+                7.into(),
+                HoverRequest::METHOD.to_owned(),
+                json!({"textDocument": {"uri": uri}, "position": {"line": 0, "character": 7}}),
+            ))
+        };
+        let Some(Message::Response(response)) = first.handle_message(hover())? else {
+            anyhow::bail!("expected a hover response");
+        };
+        assert!(
+            response.response_result.expect("hover result")["contents"]["value"]
+                .as_str()
+                .is_some_and(|hover| hover.contains("integer"))
+        );
+        let Some(Message::Response(response)) = second.handle_message(hover())? else {
+            anyhow::bail!("expected a hover response for the second session");
+        };
+        assert_eq!(
+            response.response_result.expect("empty hover response"),
+            serde_json::Value::Null
+        );
+
+        let closed = second.handle_message(Message::Notification(Notification::new(
+            DidCloseTextDocument::METHOD.to_owned(),
+            json!({"textDocument": {"uri": uri}}),
+        )))?;
+        let Some(Message::Notification(note)) = closed else {
+            anyhow::bail!("expected diagnostics to clear for the closed document");
+        };
+        let diagnostics = note.extract::<PublishDiagnosticsParams>(PublishDiagnostics::METHOD)?;
+        assert!(diagnostics.diagnostics.is_empty());
+        assert_eq!(diagnostics.uri.as_str(), uri);
+        assert!(second.docs.is_empty());
+        assert_eq!(
+            first.doc(&uri.parse()?).expect("analyzed document").version,
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn embedded_requests_report_errors_with_the_original_id() -> anyhow::Result<()> {
+        let mut session = Session::new(
+            &ClientCapabilities::default(),
+            fixed_settings(BansheeConfig::default(), None),
+        );
+        for (method, code) in [
+            (Formatting::METHOD, ErrorCode::InvalidParams),
+            ("custom/unknown", ErrorCode::MethodNotFound),
+        ] {
+            let id = RequestId::from("client-request".to_owned());
+            let result = session.handle_message(Message::Request(Request::new(
+                id.clone(),
+                method.to_owned(),
+                json!({}),
+            )))?;
+            let Some(Message::Response(response)) = result else {
+                anyhow::bail!("expected an error response for {method}");
+            };
+            assert_eq!(response.id, id);
+            assert_eq!(
+                response.response_result.expect_err("protocol error").code,
+                code as i32
+            );
+        }
+        Ok(())
     }
 }

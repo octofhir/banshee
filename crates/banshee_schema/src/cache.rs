@@ -51,8 +51,7 @@ pub fn cache_path(base_dir: &Path) -> PathBuf {
 
 /// Loads a cached snapshot, if present and parseable.
 ///
-/// A corrupt or unreadable cache returns `Ok(None)` rather than erroring: a bad
-/// cache should trigger a re-fetch, not abort the tool.
+/// Returns `None` if the cache cannot be read or deserialized.
 pub fn load(base_dir: &Path) -> Option<SchemaSnapshot> {
     let path = cache_path(base_dir);
     let bytes = std::fs::read(&path).ok()?;
@@ -80,6 +79,7 @@ pub fn load_fresh(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{FunctionEntry, FunctionParameter, FunctionParameterMode};
 
     #[test]
     fn save_then_load_roundtrips() {
@@ -89,11 +89,27 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
 
-        let snap = SchemaSnapshot::new("fp", "public");
+        let mut snap = SchemaSnapshot::new("fp", "public");
+        snap.functions.push(FunctionEntry {
+            schema: "public".into(),
+            name: "show_ids".into(),
+            return_type: "SETOF bigint".into(),
+            arguments: vec![FunctionParameter {
+                name: Some("ids".into()),
+                data_type: "bigint[]".into(),
+                mode: FunctionParameterMode::Variadic,
+                default: None,
+            }],
+            returns_set: true,
+        });
         save(&dir, &snap).unwrap();
 
         let loaded = load(&dir).expect("snapshot loads");
         assert_eq!(loaded.fingerprint, "fp");
+        let function = &loaded.functions[0];
+        assert!(function.returns_set);
+        assert_eq!(function.arguments[0].mode, FunctionParameterMode::Variadic);
+        assert_eq!(function.arguments[0].data_type, "bigint[]");
         assert!(loaded.is_fresh("fp", 600));
         assert!(cache_path(&dir).exists());
 

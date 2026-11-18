@@ -44,6 +44,7 @@ pub mod pg_formatter;
 pub mod printer;
 pub mod rules;
 mod safe;
+mod suppression;
 pub mod validate;
 
 pub use config::{CommaStyle, FormatConfig, FormatStyle, IdentifierCase, IndentStyle, KeywordCase};

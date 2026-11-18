@@ -12,10 +12,10 @@ inputs:
     description: "Files/directories to check (default: current directory)."
     default: "."
   format:
-    description: "Diagnostic format: human | json | github | sarif."
+    description: "Lint diagnostic format: human | json | github | sarif."
     default: github
   sarif-file:
-    description: "When set, write SARIF here (implies format: sarif). Upload it with github/codeql-action/upload-sarif."
+    description: "For lint, write SARIF to this file. Upload it with github/codeql-action/upload-sarif."
     default: ""
   version:
     description: "Release tag to install (default: latest stable)."
@@ -50,10 +50,25 @@ runs:
     - name: Run banshee
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      env:
+        BANSHEE_COMMAND: ${{ inputs.command }}
+        BANSHEE_REPORT_FORMAT: ${{ inputs.format }}
+        BANSHEE_SARIF_FILE: ${{ inputs.sarif-file }}
       run: |
         set -euo pipefail
-        if [ -n "${{ inputs.sarif-file }}" ]; then
-          banshee ${{ inputs.command }} --format sarif ${{ inputs.args }} > "${{ inputs.sarif-file }}"
-        else
-          banshee ${{ inputs.command }} --format "${{ inputs.format }}" ${{ inputs.args }}
-        fi
+        case "$BANSHEE_COMMAND" in
+          format)
+            banshee format --check ${{ inputs.args }}
+            ;;
+          lint)
+            if [ -n "$BANSHEE_SARIF_FILE" ]; then
+              banshee lint --format sarif ${{ inputs.args }} > "$BANSHEE_SARIF_FILE"
+            else
+              banshee lint --format "$BANSHEE_REPORT_FORMAT" ${{ inputs.args }}
+            fi
+            ;;
+          *)
+            echo "command must be lint or format" >&2
+            exit 2
+            ;;
+        esac

@@ -3,6 +3,7 @@ use crate::token_set::TokenSet;
 use banshee_syntax::{SyntaxKind, Token};
 
 pub struct Parser<'t> {
+    pub(crate) question_mark_parameters: bool,
     tokens: &'t [Token],
     #[allow(dead_code)]
     source: &'t str,
@@ -50,8 +51,9 @@ pub struct Checkpoint {
 }
 
 impl<'t> Parser<'t> {
-    pub fn new(tokens: &'t [Token], source: &'t str) -> Self {
+    pub fn new(tokens: &'t [Token], source: &'t str, question_mark_parameters: bool) -> Self {
         Self {
+            question_mark_parameters,
             tokens,
             source,
             pos: 0,

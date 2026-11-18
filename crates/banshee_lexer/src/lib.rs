@@ -17,12 +17,21 @@ use cursor::Cursor;
 use text_size::TextSize;
 
 pub fn tokenize(source: &str) -> Vec<Token> {
+    tokenize_sql(source, false)
+}
+
+/// Tokenizes SQL with question-mark parameters enabled.
+pub fn tokenize_with_question_mark_parameters(source: &str) -> Vec<Token> {
+    tokenize_sql(source, true)
+}
+
+fn tokenize_sql(source: &str, question_mark_parameters: bool) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut cursor = Cursor::new(source);
 
     while !cursor.is_eof() {
         let start = cursor.pos();
-        let kind = scan_token(&mut cursor);
+        let kind = scan_token(&mut cursor, question_mark_parameters);
         let len = TextSize::new((cursor.pos() - start) as u32);
         tokens.push(Token::new(kind, len));
     }
@@ -30,7 +39,7 @@ pub fn tokenize(source: &str) -> Vec<Token> {
     tokens
 }
 
-fn scan_token(c: &mut Cursor<'_>) -> SyntaxKind {
+fn scan_token(c: &mut Cursor<'_>, question_mark_parameters: bool) -> SyntaxKind {
     let first = c.first();
 
     // Whitespace (excluding newline)
@@ -88,12 +97,14 @@ fn scan_token(c: &mut Cursor<'_>) -> SyntaxKind {
         if c.third() == '\'' {
             c.bump(); // U
             c.bump(); // &
-            return scan_string(c, SyntaxKind::STRING, false);
+            let kind = scan_string(c, SyntaxKind::STRING, false);
+            return scan_unicode_escape(c, kind);
         }
         if c.third() == '"' {
             c.bump(); // U
             c.bump(); // &
-            return scan_quoted_ident(c);
+            let kind = scan_quoted_ident(c);
+            return scan_unicode_escape(c, kind);
         }
     }
 
@@ -109,12 +120,13 @@ fn scan_token(c: &mut Cursor<'_>) -> SyntaxKind {
             if is_dollar_string_start(c) {
                 return scan_dollar_string(c);
             }
-            // Not a dollar string, treat as named parameter
-            return scan_param(c);
+            c.bump();
+            c.bump_while(is_ident_continue);
+            return SyntaxKind::ERROR;
         }
         // $1, $2, etc. - positional parameter
         if c.second().is_ascii_digit() {
-            return scan_param(c);
+            return scan_positional_param(c);
         }
         c.bump();
         return SyntaxKind::DOLLAR;
@@ -134,7 +146,49 @@ fn scan_token(c: &mut Cursor<'_>) -> SyntaxKind {
     }
 
     // Operators and punctuation
-    scan_operator_or_punct(c)
+    scan_operator_or_punct(c, question_mark_parameters)
+}
+
+fn scan_unicode_escape(c: &mut Cursor<'_>, kind: SyntaxKind) -> SyntaxKind {
+    if kind == SyntaxKind::ERROR {
+        return kind;
+    }
+    let mut tail = c.clone();
+    let whitespace = |ch| is_horizontal_whitespace(ch) || matches!(ch, '\r' | '\n');
+    tail.bump_while(whitespace);
+    if !tail
+        .remaining()
+        .as_bytes()
+        .get(..7)
+        .is_some_and(|word| word.eq_ignore_ascii_case(b"UESCAPE"))
+    {
+        return kind;
+    }
+    tail.advance_by(7);
+    if is_ident_continue(tail.first()) {
+        return kind;
+    }
+    tail.bump_while(whitespace);
+    let escaped = matches!(tail.first(), 'e' | 'E') && tail.second() == '\'';
+    if escaped {
+        tail.bump();
+    }
+    let valid = if tail.first() == '\'' {
+        let start = tail.pos();
+        scan_string(&mut tail, SyntaxKind::STRING, escaped);
+        matches!(
+            tail.slice_from(start).as_bytes(),
+            [b'\'', escape, b'\''] if escape.is_ascii()
+                && !escape.is_ascii_hexdigit()
+                && (!escaped || *escape != b'\\')
+                && !b"+'\" \t\r\n\x0b\x0c".contains(escape)
+        )
+    } else {
+        false
+    };
+    // The escape marker and the quoted text form one literal or identifier.
+    *c = tail;
+    if valid { kind } else { SyntaxKind::ERROR }
 }
 
 fn scan_whitespace(c: &mut Cursor<'_>) -> SyntaxKind {
@@ -290,49 +344,74 @@ fn scan_dollar_string(c: &mut Cursor<'_>) -> SyntaxKind {
     SyntaxKind::DOLLAR_STRING
 }
 
-fn scan_param(c: &mut Cursor<'_>) -> SyntaxKind {
+fn scan_positional_param(c: &mut Cursor<'_>) -> SyntaxKind {
     c.bump(); // $
-    c.bump_while(|ch| ch.is_ascii_alphanumeric() || ch == '_');
-    SyntaxKind::PARAM
+    let start = c.pos();
+    c.bump_while(|ch| ch.is_ascii_digit());
+    let in_range = c.slice_from(start).parse::<i32>().is_ok();
+    finish_number(c, SyntaxKind::PARAM, in_range)
 }
 
 fn scan_number(c: &mut Cursor<'_>) -> SyntaxKind {
-    let mut has_dot = false;
-    let mut has_exp = false;
-
-    // Optional leading dot
-    if c.first() == '.' {
-        has_dot = true;
-        c.bump();
-    }
-
-    // Integer part
-    c.bump_while(|ch| ch.is_ascii_digit());
-
-    // Decimal part
-    if !has_dot && c.first() == '.' && c.second().is_ascii_digit() {
-        has_dot = true;
-        c.bump(); // .
-        c.bump_while(|ch| ch.is_ascii_digit());
-    }
-
-    // Exponent part
-    if c.first() == 'e' || c.first() == 'E' {
-        let next = c.second();
-        if next.is_ascii_digit() || next == '+' || next == '-' {
-            has_exp = true;
-            c.bump(); // e/E
-            if c.first() == '+' || c.first() == '-' {
+    if c.first() == '0' {
+        let radix = match c.second() {
+            'x' | 'X' => 16,
+            'o' | 'O' => 8,
+            'b' | 'B' => 2,
+            _ => 10,
+        };
+        if radix != 10 {
+            c.advance_by(2);
+            if c.first() == '_' {
                 c.bump();
             }
-            c.bump_while(|ch| ch.is_ascii_digit());
+            let valid = scan_digits(c, radix);
+            return finish_number(c, SyntaxKind::INTEGER, valid);
         }
     }
-
-    if has_dot || has_exp {
+    scan_digits(c, 10);
+    // PostgreSQL leaves both dots in `1..10` for the surrounding grammar.
+    let has_dot = c.first() == '.' && c.second() != '.';
+    if has_dot {
+        c.bump();
+        scan_digits(c, 10);
+    }
+    let has_exponent = matches!(c.first(), 'e' | 'E');
+    let valid = if has_exponent {
+        c.bump();
+        if matches!(c.first(), '+' | '-') {
+            c.bump();
+        }
+        scan_digits(c, 10)
+    } else {
+        true
+    };
+    let kind = if has_dot || has_exponent {
         SyntaxKind::FLOAT
     } else {
         SyntaxKind::INTEGER
+    };
+    finish_number(c, kind, valid)
+}
+
+fn scan_digits(c: &mut Cursor<'_>, radix: u32) -> bool {
+    if !c.first().is_digit(radix) {
+        return false;
+    }
+    c.bump_while(|ch| ch.is_digit(radix));
+    while c.first() == '_' && c.second().is_digit(radix) {
+        c.advance_by(2);
+        c.bump_while(|ch| ch.is_digit(radix));
+    }
+    true
+}
+
+fn finish_number(c: &mut Cursor<'_>, kind: SyntaxKind, valid: bool) -> SyntaxKind {
+    if valid && !is_ident_continue(c.first()) {
+        kind
+    } else {
+        c.bump_while(is_ident_continue);
+        SyntaxKind::ERROR
     }
 }
 
@@ -358,142 +437,114 @@ fn is_dollar_tag_char(ch: char) -> bool {
     is_ident_start(ch) || ch.is_ascii_digit()
 }
 
-fn scan_operator_or_punct(c: &mut Cursor<'_>) -> SyntaxKind {
-    let first = c.first();
-    let second = c.second();
-    let third = c.third();
-
-    // Three-character operators
-    match (first, second, third) {
-        ('-', '>', '>') => {
-            c.advance_by(3);
-            return SyntaxKind::ARROW_TEXT;
-        }
-        ('#', '>', '>') => {
-            c.advance_by(3);
-            return SyntaxKind::HASH_ARROW_TEXT;
-        }
-        ('!', '~', '*') => {
-            c.advance_by(3);
-            return SyntaxKind::BANG_TILDE_STAR;
-        }
-        _ => {}
+fn scan_operator_or_punct(c: &mut Cursor<'_>, question_mark_parameters: bool) -> SyntaxKind {
+    use SyntaxKind::*;
+    if c.starts_with("::") {
+        c.advance_by(2);
+        return DOUBLE_COLON;
     }
-
-    // Two-character operators
-    match (first, second) {
-        ('-', '>') => {
-            c.advance_by(2);
-            return SyntaxKind::ARROW;
-        }
-        ('#', '>') => {
-            c.advance_by(2);
-            return SyntaxKind::HASH_ARROW;
-        }
-        ('#', '-') => {
-            c.advance_by(2);
-            return SyntaxKind::HASH_MINUS;
-        }
-        ('@', '>') => {
-            c.advance_by(2);
-            return SyntaxKind::AT_GT;
-        }
-        ('<', '@') => {
-            c.advance_by(2);
-            return SyntaxKind::LT_AT;
-        }
-        ('?', '|') => {
-            c.advance_by(2);
-            return SyntaxKind::QUESTION_PIPE;
-        }
-        ('?', '&') => {
-            c.advance_by(2);
-            return SyntaxKind::QUESTION_AMP;
-        }
-        ('@', '?') => {
-            c.advance_by(2);
-            return SyntaxKind::AT_QUESTION;
-        }
-        ('@', '@') => {
-            c.advance_by(2);
-            return SyntaxKind::AT_AT;
-        }
-        ('<', '>') => {
-            c.advance_by(2);
-            return SyntaxKind::NE;
-        }
-        ('!', '=') => {
-            c.advance_by(2);
-            return SyntaxKind::NE;
-        }
-        ('<', '=') => {
-            c.advance_by(2);
-            return SyntaxKind::LE;
-        }
-        ('>', '=') => {
-            c.advance_by(2);
-            return SyntaxKind::GE;
-        }
-        ('|', '|') => {
-            c.advance_by(2);
-            return SyntaxKind::PIPE_PIPE;
-        }
-        (':', ':') => {
-            c.advance_by(2);
-            return SyntaxKind::DOUBLE_COLON;
-        }
-        ('~', '*') => {
-            c.advance_by(2);
-            return SyntaxKind::TILDE_STAR;
-        }
-        ('!', '~') => {
-            c.advance_by(2);
-            return SyntaxKind::BANG_TILDE;
-        }
-        ('<', '<') => {
-            c.advance_by(2);
-            return SyntaxKind::SHL;
-        }
-        ('>', '>') => {
-            c.advance_by(2);
-            return SyntaxKind::SHR;
-        }
-        ('=', '>') => {
-            c.advance_by(2);
-            return SyntaxKind::FAT_ARROW;
-        }
-        _ => {}
+    if c.first().is_ascii() && is_operator_byte(c.first() as u8) {
+        return scan_operator(c, question_mark_parameters);
     }
-
-    // Single-character operators and punctuation
-    c.bump();
-    match first {
-        '=' => SyntaxKind::EQ,
-        '<' => SyntaxKind::LT,
-        '>' => SyntaxKind::GT,
-        '+' => SyntaxKind::PLUS,
-        '-' => SyntaxKind::MINUS,
-        '*' => SyntaxKind::STAR,
-        '/' => SyntaxKind::SLASH,
-        '%' => SyntaxKind::PERCENT,
-        '^' => SyntaxKind::CARET,
-        '~' => SyntaxKind::TILDE,
-        '&' => SyntaxKind::AMP,
-        '|' => SyntaxKind::PIPE,
-        '#' => SyntaxKind::HASH,
-        '?' => SyntaxKind::QUESTION,
-        ';' => SyntaxKind::SEMICOLON,
-        ',' => SyntaxKind::COMMA,
-        '.' => SyntaxKind::DOT,
-        ':' => SyntaxKind::COLON,
-        '(' => SyntaxKind::L_PAREN,
-        ')' => SyntaxKind::R_PAREN,
-        '[' => SyntaxKind::L_BRACKET,
-        ']' => SyntaxKind::R_BRACKET,
-        '{' => SyntaxKind::L_BRACE,
-        '}' => SyntaxKind::R_BRACE,
-        _ => SyntaxKind::ERROR,
+    match c.bump() {
+        Some(';') => SEMICOLON,
+        Some(',') => COMMA,
+        Some('.') => DOT,
+        Some(':') => COLON,
+        Some('(') => L_PAREN,
+        Some(')') => R_PAREN,
+        Some('[') => L_BRACKET,
+        Some(']') => R_BRACKET,
+        Some('{') => L_BRACE,
+        Some('}') => R_BRACE,
+        _ => ERROR,
     }
+}
+
+fn is_operator_byte(byte: u8) -> bool {
+    b"+-*/<>=~!@#%^&|`?".contains(&byte)
+}
+
+fn scan_operator(c: &mut Cursor<'_>, question_mark_parameters: bool) -> SyntaxKind {
+    let mut end = 0;
+    let remaining = c.remaining().as_bytes();
+    while remaining
+        .get(end)
+        .is_some_and(|&byte| is_operator_byte(byte))
+    {
+        if matches!(remaining.get(end..end + 2), Some(b"--" | b"/*")) {
+            break;
+        }
+        end += 1;
+    }
+    let operator = &c.remaining()[..end];
+    // A trailing sign belongs to the next token unless a nonstandard
+    // operator character occurs earlier in the run.
+    let mut operator = if operator.bytes().any(|byte| b"~!@#^&|`?%".contains(&byte)) {
+        operator
+    } else {
+        let end = operator.trim_end_matches(['+', '-']).len().max(1);
+        &operator[..end]
+    };
+    if question_mark_parameters
+        && operator_kind(operator).is_none()
+        && let Some(index) = operator.find('?')
+    {
+        let (prefix, after) = operator.split_at(index);
+        if !prefix.is_empty() && operator_kind(prefix).is_some() {
+            operator = prefix;
+        } else if prefix.is_empty() && operator_kind(&after[1..]).is_some() {
+            operator = &operator[..1];
+        }
+    }
+    c.advance_by(operator.len());
+    if operator.len() >= 64 {
+        SyntaxKind::ERROR
+    } else {
+        operator_kind(operator).unwrap_or(SyntaxKind::GENERIC_OP)
+    }
+}
+
+fn operator_kind(text: &str) -> Option<SyntaxKind> {
+    use SyntaxKind::*;
+    Some(match text {
+        "->>" => ARROW_TEXT,
+        "#>>" => HASH_ARROW_TEXT,
+        "!~*" => BANG_TILDE_STAR,
+        "->" => ARROW,
+        "#>" => HASH_ARROW,
+        "#-" => HASH_MINUS,
+        "@>" => AT_GT,
+        "<@" => LT_AT,
+        "?|" => QUESTION_PIPE,
+        "?&" => QUESTION_AMP,
+        "@?" => AT_QUESTION,
+        "@@" => AT_AT,
+        "<>" | "!=" => NE,
+        "<=" => LE,
+        ">=" => GE,
+        "||" => PIPE_PIPE,
+        "~*" => TILDE_STAR,
+        "!~" => BANG_TILDE,
+        "<<" => SHL,
+        ">>" => SHR,
+        "=>" => FAT_ARROW,
+        "=" => EQ,
+        "<" => LT,
+        ">" => GT,
+        "+" => PLUS,
+        "-" => MINUS,
+        "*" => STAR,
+        "/" => SLASH,
+        "%" => PERCENT,
+        "^" => CARET,
+        "~" => TILDE,
+        "&" => AMP,
+        "|" => PIPE,
+        "#" => HASH,
+        "?" => QUESTION,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -503,6 +554,20 @@ mod tests {
 
     fn token_kinds(source: &str) -> Vec<SyntaxKind> {
         tokenize(source).into_iter().map(|t| t.kind).collect()
+    }
+
+    #[test]
+    fn postgres_numbers_and_parameter_boundaries() {
+        for number in ["1_000", "0x_FF", "0o17", "0b10_10"] {
+            assert_eq!(token_kinds(number), [INTEGER], "{number}");
+        }
+        for number in ["1.", ".5", "1.2_3e+4_5"] {
+            assert_eq!(token_kinds(number), [FLOAT], "{number}");
+        }
+        for invalid in ["1e+", "123abc", "$1oops", "$1_2", "0b102"] {
+            assert_eq!(token_kinds(invalid), [ERROR], "{invalid}");
+        }
+        assert_eq!(token_kinds("1..10"), [INTEGER, DOT, FLOAT]);
     }
 
     #[test]
@@ -585,7 +650,7 @@ mod tests {
     #[test]
     fn test_parameters() {
         assert_eq!(token_kinds("$1"), vec![PARAM]);
-        assert_eq!(token_kinds("$name"), vec![PARAM]);
+        assert_eq!(token_kinds("$name"), vec![ERROR]);
     }
 
     #[test]

@@ -13,9 +13,11 @@ runs it, with findings shown inline on the PR:
 ```yaml
 - uses: octofhir/banshee@v0.2.2
   with:
-    command: lint        # or: format
+    command: lint
     args: migrations/
 ```
+
+The Action's `format` command runs `banshee format --check`.
 
 ## SARIF code scanning
 

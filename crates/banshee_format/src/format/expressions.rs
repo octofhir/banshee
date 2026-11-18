@@ -573,8 +573,7 @@ fn format_jsonb_access(node: &SyntaxNode, printer: &mut Printer) {
                 format_expression(&child, printer);
             }
             cstree::util::NodeOrToken::Token(token) => {
-                // No spaces around JSONB operators
-                printer.write(token.text());
+                format_token(token, printer);
             }
         }
     }

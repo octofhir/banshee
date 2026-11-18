@@ -25,15 +25,19 @@
 //! schema = "public"
 //! ```
 
+mod analysis;
 mod database;
+pub mod fixes;
 mod format;
+mod formatting;
 mod lint;
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub use banshee_templater::PlaceholderStyle;
+pub use analysis::ConfiguredAnalysis;
+pub use banshee_templater::{PlaceholderStyle, Templated};
 pub use database::DatabaseSettings;
 pub use format::{
     CasePolicy, CommaStyle, FormatSettings, IdentifierCase, IndentUnit, KeywordCase,
@@ -80,7 +84,7 @@ pub struct BansheeConfig {
 /// Placeholder templating settings.
 ///
 /// When `style` is set, parameter placeholders are substituted before parsing
-/// so that app SQL (`:name`, `?`, `%(name)s`) can be linted. Off by default.
+/// so that tools can analyze app SQL (`:name`, `?`, `%(name)s`). Off by default.
 ///
 /// ```toml
 /// [templater]
@@ -91,6 +95,36 @@ pub struct BansheeConfig {
 pub struct TemplaterSettings {
     /// The placeholder syntax to substitute; `None` disables templating.
     pub style: Option<banshee_templater::PlaceholderStyle>,
+}
+
+impl TemplaterSettings {
+    /// Renders SQL for analysis when the configured style makes a substitution.
+    pub fn render(&self, source: &str) -> Option<Templated> {
+        let rendered = banshee_templater::render(source, self.style?);
+        (rendered.text() != source).then_some(rendered)
+    }
+
+    /// Parses native SQL first and uses the configured template if needed.
+    /// The returned map translates the chosen parse's offsets to `source`.
+    pub fn parse(&self, source: &str) -> (banshee_syntax::Parse, Option<Templated>) {
+        let native = banshee_parser::parse(source);
+        match self.render_on_error(source, &native) {
+            Some(template) => (banshee_parser::parse(template.text()), Some(template)),
+            None => (native, None),
+        }
+    }
+
+    pub(crate) fn render_on_error(
+        &self,
+        source: &str,
+        native: &banshee_syntax::Parse,
+    ) -> Option<Templated> {
+        if native.errors().is_empty() {
+            None
+        } else {
+            self.render(source)
+        }
+    }
 }
 
 /// Errors raised while loading configuration.
@@ -169,49 +203,6 @@ impl BansheeConfig {
     pub fn format_config(&self) -> banshee_format::FormatConfig {
         self.format.to_format_config()
     }
-
-    /// Formats `source` with the engine selected by `format.style`.
-    ///
-    /// `pgformatter` routes through the pgFormatter engine; every other preset
-    /// uses the sqlstyle engine. This is the single entry point callers should
-    /// use so both formatting styles are honored.
-    #[must_use]
-    pub fn format(&self, source: &str) -> String {
-        self.try_format(source)
-            .unwrap_or_else(|_| source.to_owned())
-    }
-
-    /// Formats source with the configured engine and reports formatting failures.
-    pub fn try_format(&self, source: &str) -> Result<String, banshee_format::FormatError> {
-        match self.format.style {
-            StylePreset::Pgformatter => {
-                banshee_format::pg_format::try_format(source, &self.format.to_pg_config())
-            }
-            _ => banshee_format::try_format(source, &self.format.to_format_config()),
-        }
-    }
-
-    /// Formats `source` and returns the minimal edits to apply, regardless of
-    /// which engine the style selects.
-    #[must_use]
-    pub fn format_edits(&self, source: &str) -> Vec<banshee_format::TextEdit> {
-        banshee_format::diff_edits(source, &self.format(source))
-    }
-
-    /// Like [`BansheeConfig::format_edits`], but only edits intersecting the byte
-    /// range `[start, end]`.
-    #[must_use]
-    pub fn format_range(
-        &self,
-        source: &str,
-        start: u32,
-        end: u32,
-    ) -> Vec<banshee_format::TextEdit> {
-        self.format_edits(source)
-            .into_iter()
-            .filter(|e| u32::from(e.range.start()) <= end && start <= u32::from(e.range.end()))
-            .collect()
-    }
 }
 
 #[cfg(test)]
@@ -265,6 +256,21 @@ mod tests {
         .unwrap();
         let fc = cfg.format_config();
         assert_eq!(fc.keyword_case, banshee_format::KeywordCase::Lower);
+    }
+
+    #[test]
+    fn range_formatting_uses_only_the_selected_statement_and_configured_preset() {
+        let cfg = BansheeConfig::from_toml("[format]\nstyle = \"pgformatter\"\n").unwrap();
+        let source = "select 1;\nselect 2;\nselect 3;\n";
+        let edits = cfg.format_range(source, 10, 19);
+        let [edit] = edits.as_slice() else {
+            panic!("expected a single edit, got {edits:?}");
+        };
+        let mut output = source.to_owned();
+        output.replace_range(std::ops::Range::<usize>::from(edit.range), &edit.new_text);
+        assert_eq!(output, "select 1;\nSELECT\n    2;\nselect 3;\n");
+        assert!(cfg.format_range(source, 19, 10).is_empty());
+        assert!(cfg.format_range(source, 10, 10).is_empty());
     }
 
     #[test]

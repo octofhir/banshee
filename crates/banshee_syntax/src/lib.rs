@@ -34,6 +34,24 @@ use text_size::{TextRange, TextSize};
 pub type SyntaxNode = ResolvedNode<SyntaxKind>;
 pub type SyntaxToken = ResolvedToken<SyntaxKind>;
 
+/// Returns the payload of an inline lint directive in a SQL comment.
+/// An empty payload denotes a bare `noqa`.
+pub fn noqa_payload(comment: &str) -> Option<&str> {
+    let inner = if let Some(rest) = comment.strip_prefix("/*") {
+        rest.strip_suffix("*/")?
+    } else if comment.starts_with("--") {
+        comment.rsplit("--").next()?
+    } else {
+        return None;
+    };
+    let rest = inner.trim().strip_prefix("noqa")?.trim();
+    if rest.is_empty() {
+        return Some("");
+    }
+    let payload = rest.strip_prefix(':')?.trim();
+    (!payload.is_empty()).then_some(payload)
+}
+
 /// A node-or-token element of the syntax tree (re-exported for consumers that
 /// walk `descendants_with_tokens` without depending on `cstree` directly).
 pub use cstree::util::NodeOrToken;

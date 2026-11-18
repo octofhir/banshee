@@ -38,12 +38,14 @@ fn test_provider() -> MemorySchemaProvider {
 }
 
 fn render_item(item: &CompletionItem) -> String {
+    let insert = item.insert_text.as_deref().unwrap_or("-");
+    let content = insert.trim_end_matches(' ');
+    let trailing_spaces = "\\x20".repeat(insert.len() - content.len());
     format!(
-        "{} | {:?} | detail={} | insert={}",
+        "{} | {:?} | detail={} | insert={content}{trailing_spaces}",
         item.label,
         item.kind,
-        item.detail.as_deref().unwrap_or("-"),
-        item.insert_text.as_deref().unwrap_or("-")
+        item.detail.as_deref().unwrap_or("-")
     )
 }
 

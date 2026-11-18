@@ -1,6 +1,5 @@
 ---
 source: crates/banshee_completion/tests/snapshots.rs
-assertion_line: 74
 expression: render_completion(&result)
 ---
 context: TableName { schema: None }
@@ -8,8 +7,8 @@ is_incomplete: true
 orders | Table | detail=public.orders | insert=-
 public | Schema | detail=- | insert=public.
 users | Table | detail=public.users | insert=-
-GROUP BY | Keyword | detail=- | insert=GROUP BY 
-JOIN | Keyword | detail=- | insert=JOIN 
-LATERAL | Keyword | detail=- | insert=LATERAL 
-ONLY | Keyword | detail=- | insert=ONLY 
-WHERE | Keyword | detail=- | insert=WHERE
+GROUP BY | Keyword | detail=- | insert=GROUP BY\x20
+JOIN | Keyword | detail=- | insert=JOIN\x20
+LATERAL | Keyword | detail=- | insert=LATERAL\x20
+LIMIT | Keyword | detail=- | insert=LIMIT\x20
+OFFSET | Keyword | detail=- | insert=OFFSET\x20

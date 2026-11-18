@@ -94,6 +94,15 @@ pub trait FunctionProvider: Send + Sync {
         })
     }
 
+    /// Returns the known signatures for an already-normalized function name.
+    /// Quoted names are matched exactly, like a lookup in the server catalog.
+    fn overloads(&self, schema: Option<&str>, name: &str) -> Vec<FunctionInfo> {
+        self.functions()
+            .into_iter()
+            .filter(|f| f.name == name && (schema.is_none() || f.schema.as_deref() == schema))
+            .collect()
+    }
+
     /// Returns functions in a specific schema.
     fn functions_in_schema(&self, schema: &str) -> Vec<FunctionInfo> {
         self.functions()

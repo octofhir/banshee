@@ -54,7 +54,7 @@ use crate::generators::{
 };
 use crate::providers::{FunctionProvider, SchemaProvider};
 use crate::triggers::{detect_jsonb_trigger, detect_jsonpath_in_string};
-use crate::types::{CompletionContext, CompletionItem, CompletionResult};
+use crate::types::{CompletionContext, CompletionItem, CompletionItemKind, CompletionResult};
 
 /// A completion request.
 #[must_use]
@@ -76,6 +76,12 @@ pub struct CompletionRequest<'a> {
 
     /// Maximum number of items to return (0 = unlimited).
     pub limit: usize,
+
+    /// Include keyword completion items.
+    pub keywords: bool,
+
+    /// Include function completion items.
+    pub functions: bool,
 }
 
 impl<'a> CompletionRequest<'a> {
@@ -88,6 +94,8 @@ impl<'a> CompletionRequest<'a> {
             schema_provider: None,
             function_provider: None,
             limit: 100,
+            keywords: true,
+            functions: true,
         }
     }
 
@@ -114,6 +122,26 @@ impl<'a> CompletionRequest<'a> {
         self.limit = limit;
         self
     }
+
+    /// Controls whether keyword items are suggested.
+    pub fn with_keywords(mut self, enabled: bool) -> Self {
+        self.keywords = enabled;
+        self
+    }
+
+    /// Controls whether function items are suggested.
+    pub fn with_functions(mut self, enabled: bool) -> Self {
+        self.functions = enabled;
+        self
+    }
+
+    fn function_items(&self, prefix: Option<&str>) -> Vec<CompletionItem> {
+        if self.functions {
+            complete_functions(self.function_provider, prefix)
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 /// Performs completion at the specified position.
@@ -134,19 +162,30 @@ pub fn complete(request: CompletionRequest<'_>) -> CompletionResult {
         context = detect_context_from_text(request.source, request.offset);
     }
 
-    // Generate completion items based on context
     let mut items = generate_completions(&context, &request, parse);
+    items.retain(|item| match item.kind {
+        CompletionItemKind::Keyword => request.keywords,
+        CompletionItemKind::Function => request.functions,
+        _ => true,
+    });
 
-    // Apply limit
-    let is_incomplete = if request.limit > 0 && items.len() > request.limit {
-        items.truncate(request.limit);
-        true
-    } else {
-        false
+    let prefix = get_prefix_at_offset(request.source, request.offset);
+    let starts_with_prefix = |item: &CompletionItem| {
+        prefix.as_ref().is_none_or(|prefix| {
+            item.effective_filter_text()
+                .get(..prefix.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+        })
     };
-
-    // Sort items by sort key
-    items.sort_by(|a, b| a.effective_sort_key().cmp(b.effective_sort_key()));
+    items.sort_by(|a, b| {
+        starts_with_prefix(b)
+            .cmp(&starts_with_prefix(a))
+            .then_with(|| a.effective_sort_key().cmp(b.effective_sort_key()))
+    });
+    let is_incomplete = request.limit > 0 && items.len() > request.limit;
+    if is_incomplete {
+        items.truncate(request.limit);
+    }
 
     CompletionResult {
         context,
@@ -275,10 +314,7 @@ fn generate_completions(
             items.extend(complete_tables(request.schema_provider, None, None));
 
             // Add functions
-            items.extend(complete_functions(
-                request.function_provider,
-                prefix.as_deref(),
-            ));
+            items.extend(request.function_items(prefix.as_deref()));
 
             // Add keywords like DISTINCT, CASE, etc.
             items.extend(crate::generators::keywords::after_select_keywords());
@@ -288,10 +324,9 @@ fn generate_completions(
 
         CompletionContext::TableName { schema } => {
             let prefix = table_context_prefix(request.source, request.offset);
-            let schema = prefix
-                .as_ref()
-                .and_then(|value| value.schema.as_deref())
-                .or(schema.as_deref());
+            let schema = schema
+                .as_deref()
+                .or_else(|| prefix.as_ref().and_then(|value| value.schema.as_deref()));
             let table_prefix = prefix
                 .as_ref()
                 .and_then(|value| value.table_prefix.as_deref());
@@ -360,10 +395,7 @@ fn generate_completions(
                         complete_columns(request.schema_provider, None, &tables, prefix.as_deref());
 
                     // Add functions for expressions (jsonb_*, etc.)
-                    items.extend(complete_functions(
-                        request.function_provider,
-                        prefix.as_deref(),
-                    ));
+                    items.extend(request.function_items(prefix.as_deref()));
 
                     // Also add table names for qualification
                     for table_name in tables {
@@ -395,10 +427,7 @@ fn generate_completions(
             ));
 
             // Add functions for expressions (jsonb_*, etc.)
-            items.extend(complete_functions(
-                request.function_provider,
-                prefix.as_deref(),
-            ));
+            items.extend(request.function_items(prefix.as_deref()));
 
             // Add table aliases for qualified references
             if !left_table.is_empty() {
@@ -431,7 +460,7 @@ fn generate_completions(
             ));
 
             // Add functions for expressions
-            items.extend(complete_functions(request.function_provider, None));
+            items.extend(request.function_items(prefix.as_deref()));
 
             // Add operators and keywords
             items.extend(complete_keywords(
@@ -1033,6 +1062,59 @@ mod tests {
             result.context,
             CompletionContext::TableName { .. }
         ));
+    }
+
+    #[test]
+    fn keeps_the_highest_ranked_items_when_limited() {
+        let all = complete(CompletionRequest::new("", 0.into()).with_limit(0));
+        let top = complete(CompletionRequest::new("", 0.into()).with_limit(1));
+        assert!(!all.is_incomplete);
+        assert!(top.is_incomplete);
+        assert_eq!(top.items.len(), 1);
+        assert_eq!(top.items[0].label, all.items[0].label);
+
+        let prefix = complete(CompletionRequest::new("sel", 3.into()).with_limit(1));
+        assert_eq!(prefix.items[0].label, "SELECT");
+    }
+
+    #[test]
+    fn disabled_kinds_do_not_consume_the_limit_or_query_functions() {
+        struct UnusedFunctions;
+        impl FunctionProvider for UnusedFunctions {
+            fn functions(&self) -> Vec<crate::types::FunctionInfo> {
+                panic!("function completions are disabled");
+            }
+        }
+
+        let result = complete(
+            CompletionRequest::new("SELECT ", 7.into())
+                .with_function_provider(&UnusedFunctions)
+                .with_functions(false)
+                .with_limit(1),
+        );
+        assert!(result.is_incomplete);
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].kind, CompletionItemKind::Keyword);
+
+        let provider = crate::MemorySchemaProvider::new()
+            .add_table(crate::TableInfo::new("widgets").with_schema("public"))
+            .add_table(crate::TableInfo::new("report").with_schema("Report Data"));
+        for (source, expected) in [
+            ("SELECT * FROM public.", "widgets"),
+            ("SELECT * FROM PUBLIC.", "widgets"),
+            ("SELECT * FROM \"Report Data\" .", "report"),
+        ] {
+            let result = complete(
+                CompletionRequest::new(source, TextSize::new(source.len() as u32))
+                    .with_schema_provider(&provider)
+                    .with_keywords(false)
+                    .with_functions(false)
+                    .with_limit(1),
+            );
+            assert!(!result.is_incomplete, "{source}: {result:?}");
+            assert_eq!(result.items.len(), 1, "{source}: {result:?}");
+            assert_eq!(result.items[0].label, expected);
+        }
     }
 
     #[test]

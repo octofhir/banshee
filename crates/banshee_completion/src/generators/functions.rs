@@ -1,7 +1,11 @@
 //! Function completion generator.
 
+mod builtins;
+
 use crate::providers::FunctionProvider;
-use crate::types::{CompletionData, CompletionItem, CompletionItemKind, FunctionInfo};
+use crate::types::{
+    CompletionData, CompletionItem, CompletionItemKind, FunctionInfo, display_identifier,
+};
 
 /// Default search path for schema-qualified display decisions.
 const DEFAULT_SEARCH_PATH: &[&str] = &["pg_catalog", "public"];
@@ -142,19 +146,15 @@ fn create_function_item_with_options(func: FunctionInfo, search_path: &[&str]) -
     let signature = func.signature();
 
     // Determine if we need to qualify with schema
-    let needs_qualification = func
+    let name = display_identifier(&func.name);
+    let label = if let Some(schema) = func
         .schema
-        .as_ref()
-        .is_some_and(|s| !search_path.iter().any(|sp| sp.eq_ignore_ascii_case(s)));
-
-    let label = if needs_qualification {
-        format!(
-            "{}.{}",
-            func.schema.as_deref().unwrap_or("public"),
-            func.name
-        )
+        .as_deref()
+        .filter(|schema| !search_path.contains(schema))
+    {
+        format!("{}.{name}", display_identifier(schema))
     } else {
-        func.name.clone()
+        name.into_owned()
     };
 
     let insert_text = format!("{}(", label);
@@ -213,361 +213,32 @@ fn is_common_function(name: &str) -> bool {
 
 /// Returns built-in SQL functions.
 fn builtin_functions(prefix: Option<&str>) -> Vec<CompletionItem> {
-    let functions = [
-        // Aggregate functions
-        ("count", "count(expression) -> bigint", "Count rows"),
-        ("sum", "sum(expression) -> numeric", "Sum of values"),
-        ("avg", "avg(expression) -> numeric", "Average of values"),
-        ("min", "min(expression) -> same as input", "Minimum value"),
-        ("max", "max(expression) -> same as input", "Maximum value"),
-        (
-            "array_agg",
-            "array_agg(expression) -> array",
-            "Aggregate into array",
-        ),
-        (
-            "string_agg",
-            "string_agg(expression, delimiter) -> text",
-            "Aggregate into string",
-        ),
-        ("bool_and", "bool_and(expression) -> boolean", "Logical AND"),
-        ("bool_or", "bool_or(expression) -> boolean", "Logical OR"),
-        // JSON/JSONB functions
-        (
-            "jsonb_build_object",
-            "jsonb_build_object(key, value, ...) -> jsonb",
-            "Build JSONB object",
-        ),
-        (
-            "jsonb_build_array",
-            "jsonb_build_array(value, ...) -> jsonb",
-            "Build JSONB array",
-        ),
-        (
-            "jsonb_agg",
-            "jsonb_agg(expression) -> jsonb",
-            "Aggregate into JSONB array",
-        ),
-        (
-            "jsonb_object_agg",
-            "jsonb_object_agg(key, value) -> jsonb",
-            "Aggregate into JSONB object",
-        ),
-        (
-            "jsonb_extract_path",
-            "jsonb_extract_path(jsonb, path...) -> jsonb",
-            "Extract JSONB path",
-        ),
-        (
-            "jsonb_extract_path_text",
-            "jsonb_extract_path_text(jsonb, path...) -> text",
-            "Extract JSONB path as text",
-        ),
-        (
-            "jsonb_set",
-            "jsonb_set(jsonb, path, value) -> jsonb",
-            "Set JSONB value at path",
-        ),
-        (
-            "jsonb_insert",
-            "jsonb_insert(jsonb, path, value) -> jsonb",
-            "Insert into JSONB",
-        ),
-        (
-            "jsonb_pretty",
-            "jsonb_pretty(jsonb) -> text",
-            "Pretty-print JSONB",
-        ),
-        (
-            "jsonb_typeof",
-            "jsonb_typeof(jsonb) -> text",
-            "Return JSONB type",
-        ),
-        (
-            "jsonb_array_elements",
-            "jsonb_array_elements(jsonb) -> setof jsonb",
-            "Expand JSONB array",
-        ),
-        (
-            "jsonb_array_elements_text",
-            "jsonb_array_elements_text(jsonb) -> setof text",
-            "Expand JSONB array as text",
-        ),
-        (
-            "jsonb_object_keys",
-            "jsonb_object_keys(jsonb) -> setof text",
-            "Return JSONB object keys",
-        ),
-        (
-            "jsonb_each",
-            "jsonb_each(jsonb) -> setof (key, value)",
-            "Expand JSONB to key-value pairs",
-        ),
-        (
-            "jsonb_each_text",
-            "jsonb_each_text(jsonb) -> setof (key, value)",
-            "Expand JSONB to text key-value pairs",
-        ),
-        (
-            "jsonb_strip_nulls",
-            "jsonb_strip_nulls(jsonb) -> jsonb",
-            "Remove null fields",
-        ),
-        ("to_jsonb", "to_jsonb(value) -> jsonb", "Convert to JSONB"),
-        // PostgreSQL 12+ JSONPath functions
-        (
-            "jsonb_path_exists",
-            "jsonb_path_exists(target jsonb, path jsonpath) -> boolean",
-            "Check if JSONPath returns any items",
-        ),
-        (
-            "jsonb_path_match",
-            "jsonb_path_match(target jsonb, path jsonpath) -> boolean",
-            "Check JSONPath predicate result",
-        ),
-        (
-            "jsonb_path_query",
-            "jsonb_path_query(target jsonb, path jsonpath) -> setof jsonb",
-            "Extract values matching JSONPath",
-        ),
-        (
-            "jsonb_path_query_array",
-            "jsonb_path_query_array(target jsonb, path jsonpath) -> jsonb",
-            "Extract values as JSONB array",
-        ),
-        (
-            "jsonb_path_query_first",
-            "jsonb_path_query_first(target jsonb, path jsonpath) -> jsonb",
-            "Extract first value matching JSONPath",
-        ),
-        // Window functions
-        (
-            "row_number",
-            "row_number() -> bigint",
-            "Row number in partition",
-        ),
-        ("rank", "rank() -> bigint", "Rank with gaps"),
-        ("dense_rank", "dense_rank() -> bigint", "Rank without gaps"),
-        ("ntile", "ntile(n) -> integer", "Divide into n buckets"),
-        (
-            "lag",
-            "lag(value, offset, default) -> same as input",
-            "Previous row value",
-        ),
-        (
-            "lead",
-            "lead(value, offset, default) -> same as input",
-            "Next row value",
-        ),
-        (
-            "first_value",
-            "first_value(value) -> same as input",
-            "First value in window",
-        ),
-        (
-            "last_value",
-            "last_value(value) -> same as input",
-            "Last value in window",
-        ),
-        (
-            "nth_value",
-            "nth_value(value, n) -> same as input",
-            "Nth value in window",
-        ),
-        // String functions
-        ("concat", "concat(text, ...) -> text", "Concatenate strings"),
-        (
-            "concat_ws",
-            "concat_ws(separator, text, ...) -> text",
-            "Concatenate with separator",
-        ),
-        ("length", "length(text) -> integer", "String length"),
-        ("lower", "lower(text) -> text", "Convert to lowercase"),
-        ("upper", "upper(text) -> text", "Convert to uppercase"),
-        ("trim", "trim(text) -> text", "Remove whitespace"),
-        ("ltrim", "ltrim(text) -> text", "Remove leading whitespace"),
-        ("rtrim", "rtrim(text) -> text", "Remove trailing whitespace"),
-        (
-            "substring",
-            "substring(text, start, length) -> text",
-            "Extract substring",
-        ),
-        (
-            "replace",
-            "replace(text, from, to) -> text",
-            "Replace occurrences",
-        ),
-        (
-            "split_part",
-            "split_part(text, delimiter, n) -> text",
-            "Split and return part",
-        ),
-        (
-            "regexp_replace",
-            "regexp_replace(text, pattern, replacement) -> text",
-            "Regex replace",
-        ),
-        (
-            "regexp_matches",
-            "regexp_matches(text, pattern) -> text[]",
-            "Regex matches",
-        ),
-        // Date/time functions
-        (
-            "now",
-            "now() -> timestamp with time zone",
-            "Current timestamp",
-        ),
-        (
-            "current_timestamp",
-            "current_timestamp -> timestamp with time zone",
-            "Current timestamp",
-        ),
-        ("current_date", "current_date -> date", "Current date"),
-        (
-            "current_time",
-            "current_time -> time with time zone",
-            "Current time",
-        ),
-        (
-            "extract",
-            "extract(field from source) -> numeric",
-            "Extract date/time field",
-        ),
-        (
-            "date_trunc",
-            "date_trunc(field, source) -> timestamp",
-            "Truncate to specified precision",
-        ),
-        (
-            "date_part",
-            "date_part(field, source) -> double precision",
-            "Extract date/time part",
-        ),
-        (
-            "age",
-            "age(timestamp, timestamp) -> interval",
-            "Calculate age",
-        ),
-        (
-            "to_char",
-            "to_char(timestamp, format) -> text",
-            "Format as string",
-        ),
-        ("to_date", "to_date(text, format) -> date", "Parse date"),
-        (
-            "to_timestamp",
-            "to_timestamp(text, format) -> timestamp",
-            "Parse timestamp",
-        ),
-        // Conditional functions
-        (
-            "coalesce",
-            "coalesce(value, ...) -> same as first non-null",
-            "Return first non-null",
-        ),
-        (
-            "nullif",
-            "nullif(value1, value2) -> same as input",
-            "Return null if equal",
-        ),
-        (
-            "greatest",
-            "greatest(value, ...) -> same as input",
-            "Return greatest value",
-        ),
-        (
-            "least",
-            "least(value, ...) -> same as input",
-            "Return smallest value",
-        ),
-        // Math functions
-        ("abs", "abs(numeric) -> numeric", "Absolute value"),
-        ("ceil", "ceil(numeric) -> numeric", "Round up"),
-        ("floor", "floor(numeric) -> numeric", "Round down"),
-        (
-            "round",
-            "round(numeric, scale) -> numeric",
-            "Round to scale",
-        ),
-        (
-            "trunc",
-            "trunc(numeric, scale) -> numeric",
-            "Truncate to scale",
-        ),
-        ("sqrt", "sqrt(numeric) -> double precision", "Square root"),
-        (
-            "power",
-            "power(base, exponent) -> double precision",
-            "Raise to power",
-        ),
-        ("mod", "mod(dividend, divisor) -> numeric", "Modulo"),
-        ("random", "random() -> double precision", "Random value 0-1"),
-        // Array functions
-        (
-            "array_length",
-            "array_length(array, dimension) -> integer",
-            "Array length",
-        ),
-        (
-            "array_append",
-            "array_append(array, element) -> array",
-            "Append to array",
-        ),
-        (
-            "array_prepend",
-            "array_prepend(element, array) -> array",
-            "Prepend to array",
-        ),
-        (
-            "array_cat",
-            "array_cat(array, array) -> array",
-            "Concatenate arrays",
-        ),
-        (
-            "array_position",
-            "array_position(array, element) -> integer",
-            "Find element position",
-        ),
-        (
-            "array_remove",
-            "array_remove(array, element) -> array",
-            "Remove element",
-        ),
-        (
-            "unnest",
-            "unnest(array) -> setof element",
-            "Expand array to rows",
-        ),
-        // Type conversion
-        ("cast", "cast(value AS type) -> type", "Convert type"),
-    ];
-
-    let prefix_lower = prefix.map(|p| p.to_lowercase());
-
-    functions
+    let prefix_lower = prefix.map(str::to_ascii_lowercase);
+    builtins::FUNCTIONS
         .iter()
-        .filter(|(name, _, _)| {
+        .filter(|function| {
             prefix_lower
                 .as_ref()
-                .is_none_or(|p| name.to_lowercase().starts_with(p))
+                .is_none_or(|p| function.name.starts_with(p))
         })
-        .map(|(name, signature, doc)| {
+        .map(|function| {
+            let name = function.name;
+            let signature = function.signature();
             let sort_key = if is_common_function(name) {
-                format!("0_{}", name)
+                format!("0_{name}")
             } else {
-                format!("1_{}", name)
+                format!("1_{name}")
             };
 
-            CompletionItem::new(CompletionItemKind::Function, *name)
-                .with_detail(signature.to_string())
-                .with_insert_text(format!("{}(", name))
+            CompletionItem::new(CompletionItemKind::Function, name)
+                .with_detail(signature.clone())
+                .with_insert_text(function.insertion())
                 .with_sort_key(sort_key)
-                .with_documentation(doc.to_string())
+                .with_documentation(function.description.to_string())
                 .with_data(CompletionData::Function {
                     schema: None,
                     name: name.to_string(),
-                    signature: Some(signature.to_string()),
+                    signature: Some(signature),
                 })
         })
         .collect()
@@ -584,102 +255,10 @@ pub fn get_function_signature(
         return Some(func);
     }
 
-    // Check built-in functions
-    get_builtin_function_info(name)
-}
-
-/// Returns info for a built-in function.
-fn get_builtin_function_info(name: &str) -> Option<FunctionInfo> {
-    use crate::types::FunctionArg;
-
-    let name_lower = name.to_lowercase();
-    match name_lower.as_str() {
-        "count" => {
-            Some(FunctionInfo::new("count", "bigint").with_arg(FunctionArg::new("expression")))
-        }
-        "sum" => Some(FunctionInfo::new("sum", "numeric").with_arg(FunctionArg::new("expression"))),
-        "avg" => Some(FunctionInfo::new("avg", "numeric").with_arg(FunctionArg::new("expression"))),
-        "min" | "max" => Some(
-            FunctionInfo::new(&name_lower, "same as input")
-                .with_arg(FunctionArg::new("expression")),
-        ),
-        "coalesce" => Some(
-            FunctionInfo::new("coalesce", "same as first non-null")
-                .with_arg(FunctionArg::new("value").with_name("value1"))
-                .with_arg(FunctionArg::new("value").with_name("value2")),
-        ),
-        "nullif" => Some(
-            FunctionInfo::new("nullif", "same as input")
-                .with_arg(FunctionArg::new("value").with_name("value1"))
-                .with_arg(FunctionArg::new("value").with_name("value2")),
-        ),
-        "jsonb_build_object" => Some(
-            FunctionInfo::new("jsonb_build_object", "jsonb")
-                .with_arg(FunctionArg::new("any").with_name("key"))
-                .with_arg(FunctionArg::new("any").with_name("value")),
-        ),
-        "jsonb_extract_path" => Some(
-            FunctionInfo::new("jsonb_extract_path", "jsonb")
-                .with_arg(FunctionArg::new("jsonb").with_name("from_json"))
-                .with_arg(
-                    FunctionArg::new("text")
-                        .with_name("path_elems")
-                        .with_mode(crate::types::ArgMode::Variadic),
-                ),
-        ),
-        "jsonb_extract_path_text" => Some(
-            FunctionInfo::new("jsonb_extract_path_text", "text")
-                .with_arg(FunctionArg::new("jsonb").with_name("from_json"))
-                .with_arg(
-                    FunctionArg::new("text")
-                        .with_name("path_elems")
-                        .with_mode(crate::types::ArgMode::Variadic),
-                ),
-        ),
-        "jsonb_path_exists" => Some(
-            FunctionInfo::new("jsonb_path_exists", "boolean")
-                .with_arg(FunctionArg::new("jsonb").with_name("target"))
-                .with_arg(FunctionArg::new("jsonpath").with_name("path")),
-        ),
-        "jsonb_path_match" => Some(
-            FunctionInfo::new("jsonb_path_match", "boolean")
-                .with_arg(FunctionArg::new("jsonb").with_name("target"))
-                .with_arg(FunctionArg::new("jsonpath").with_name("path")),
-        ),
-        "jsonb_path_query" => Some(
-            FunctionInfo::new("jsonb_path_query", "setof jsonb")
-                .with_arg(FunctionArg::new("jsonb").with_name("target"))
-                .with_arg(FunctionArg::new("jsonpath").with_name("path")),
-        ),
-        "jsonb_path_query_array" => Some(
-            FunctionInfo::new("jsonb_path_query_array", "jsonb")
-                .with_arg(FunctionArg::new("jsonb").with_name("target"))
-                .with_arg(FunctionArg::new("jsonpath").with_name("path")),
-        ),
-        "jsonb_path_query_first" => Some(
-            FunctionInfo::new("jsonb_path_query_first", "jsonb")
-                .with_arg(FunctionArg::new("jsonb").with_name("target"))
-                .with_arg(FunctionArg::new("jsonpath").with_name("path")),
-        ),
-        "jsonb_set" => Some(
-            FunctionInfo::new("jsonb_set", "jsonb")
-                .with_arg(FunctionArg::new("jsonb").with_name("target"))
-                .with_arg(FunctionArg::new("text[]").with_name("path"))
-                .with_arg(FunctionArg::new("jsonb").with_name("new_value")),
-        ),
-        "jsonb_insert" => Some(
-            FunctionInfo::new("jsonb_insert", "jsonb")
-                .with_arg(FunctionArg::new("jsonb").with_name("target"))
-                .with_arg(FunctionArg::new("text[]").with_name("path"))
-                .with_arg(FunctionArg::new("jsonb").with_name("new_value")),
-        ),
-        "jsonb_delete_path" => Some(
-            FunctionInfo::new("jsonb_delete_path", "jsonb")
-                .with_arg(FunctionArg::new("jsonb").with_name("target"))
-                .with_arg(FunctionArg::new("text[]").with_name("path")),
-        ),
-        _ => None,
-    }
+    builtins::FUNCTIONS
+        .iter()
+        .find(|function| function.name.eq_ignore_ascii_case(name))?
+        .info()
 }
 
 /// Describes what kind of completion to provide for a JSONB function argument.
@@ -770,6 +349,27 @@ mod tests {
         let func = info.unwrap();
         assert_eq!(func.name, "count");
         assert!(!func.args.is_empty());
+    }
+
+    #[test]
+    fn builtin_completion_and_signature_share_function_metadata() {
+        let items = complete_functions(None, None);
+        for name in [
+            "lower",
+            "upper",
+            "concat_ws",
+            "jsonb_extract_path",
+            "coalesce",
+        ] {
+            let item = items.iter().find(|item| item.label == name).unwrap();
+            let info = get_function_signature(None, &name.to_ascii_uppercase()).unwrap();
+            assert_eq!(item.detail.as_deref(), Some(info.signature().as_str()));
+        }
+        let current_date = items
+            .iter()
+            .find(|item| item.label == "current_date")
+            .unwrap();
+        assert_eq!(current_date.insert_text.as_deref(), Some("current_date"));
     }
 
     #[test]

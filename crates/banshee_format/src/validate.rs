@@ -146,9 +146,7 @@ impl FormatResult {
 pub fn validate_format(original: &str, formatted: &str) -> Result<(), FormatError> {
     // Parse original
     let orig_parse = banshee_parser::parse(original);
-    if !orig_parse.errors().is_empty() {
-        return Err(FormatError::InvalidInput(orig_parse.errors().to_vec()));
-    }
+    validate_input(&orig_parse)?;
 
     // Parse formatted output
     let fmt_parse = banshee_parser::parse(formatted);
@@ -166,6 +164,12 @@ pub fn validate_format(original: &str, formatted: &str) -> Result<(), FormatErro
     }
 
     Ok(())
+}
+
+/// Rejects input with parse errors or a `COPY FROM STDIN` command whose
+/// following bytes may be raw data.
+pub fn validate_input(parse: &Parse) -> Result<(), FormatError> {
+    crate::safe::check_input(parse, &parse.syntax())
 }
 
 /// Compares the source tokens of two parse trees, including comments and

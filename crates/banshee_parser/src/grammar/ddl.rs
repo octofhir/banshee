@@ -115,9 +115,40 @@ fn create_function_stmt(p: &mut Parser<'_>) {
     if p.at(SyntaxKind::L_PAREN) {
         consume_balanced_parens(p); // argument list
     }
-    // RETURNS …, body ($$ … $$ is a single token), LANGUAGE …, options.
-    consume_until_semi(p);
+    // RETURNS, LANGUAGE and other options, including quoted bodies.
+    while !p.at_end() && !p.at(SyntaxKind::SEMICOLON) {
+        if p.at(SyntaxKind::BEGIN_KW) && p.nth_text(1).eq_ignore_ascii_case("atomic") {
+            sql_routine_body(p);
+            break;
+        } else if p.at(SyntaxKind::L_PAREN) {
+            consume_balanced_parens(p);
+        } else {
+            p.bump_any();
+        }
+    }
     m.complete(p, SyntaxKind::CREATE_FUNCTION_STMT);
+}
+
+fn sql_routine_body(p: &mut Parser<'_>) {
+    let body = p.start();
+    p.bump(); // BEGIN
+    p.bump(); // ATOMIC
+    while !p.at_end() && !p.at(SyntaxKind::END_KW) {
+        if p.eat(SyntaxKind::SEMICOLON) {
+            continue;
+        }
+        if super::select::at_ident_text(p, "return") {
+            p.bump();
+            if super::expressions::expr(p).is_none() {
+                p.error("expected expression after RETURN");
+            }
+        } else {
+            super::statement(p);
+        }
+        p.expect(SyntaxKind::SEMICOLON);
+    }
+    p.expect(SyntaxKind::END_KW);
+    body.complete(p, SyntaxKind::SQL_ROUTINE_BODY);
 }
 
 fn create_trigger_stmt(p: &mut Parser<'_>) {

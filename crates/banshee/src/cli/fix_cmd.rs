@@ -2,13 +2,13 @@
 
 use std::path::PathBuf;
 
-use anyhow::Result;
-use banshee_hir::TextEdit;
+use anyhow::{Context, Result, bail};
+use banshee_config::fixes::{apply_fixes, is_safe_fix, validate_fix_output};
 use clap::Args;
 use rayon::prelude::*;
 
 use super::analysis;
-use super::io::{self, apply_edits, gather_inputs};
+use super::io::{self, gather_inputs};
 use super::{Cli, exit};
 
 #[derive(Args, Debug)]
@@ -19,6 +19,10 @@ pub struct FixArgs {
     /// Print a unified-ish diff instead of writing changes.
     #[arg(long)]
     diff: bool,
+
+    /// Include fixes that can change SQL behavior.
+    #[arg(long)]
+    unsafe_fixes: bool,
 
     /// Write changes to files. Implied unless `--diff` or stdin is used.
     #[arg(long)]
@@ -40,23 +44,33 @@ pub fn run(args: &FixArgs, cli: &Cli) -> Result<u8> {
     let columns = analysis::migration_columns(&inputs);
 
     // Compute the fixed text per file in parallel; `None` means unchanged.
-    let fixed: Vec<Option<String>> = inputs
+    let candidates: Vec<_> = inputs
         .par_iter()
         .map(|input| {
             let analyzed = analysis::analyze(&input.text, &config, provider_ref, &columns);
-            let edits: Vec<TextEdit> = analyzed
+            if analyzed.has_parse_errors {
+                bail!("input has SQL parse errors");
+            }
+            let fixes = analyzed
                 .diagnostics
                 .iter()
-                .flat_map(|d| d.fixes.iter())
-                .flat_map(|f| f.edits.iter().cloned())
-                .collect();
-            if edits.is_empty() {
-                return None;
+                .filter(|d| args.unsafe_fixes || is_safe_fix(d.code))
+                .filter_map(|d| d.fixes.first());
+            let Some(out) = apply_fixes(&input.text, fixes) else {
+                return Ok(None);
+            };
+            if out == input.text {
+                return Ok(None);
             }
-            let out = apply_edits(&input.text, edits);
-            (out != input.text).then_some(out)
+            validate_fix_output(&input.text, &out, &config.templater, args.unsafe_fixes)?;
+            Ok(Some(out))
         })
         .collect();
+    let fixed = inputs
+        .iter()
+        .zip(candidates)
+        .map(|(input, result)| result.with_context(|| format!("cannot fix {}", input.label)))
+        .collect::<Result<Vec<_>>>()?;
 
     let mut fixed_files = 0usize;
     for (input, fixed) in inputs.iter().zip(&fixed) {

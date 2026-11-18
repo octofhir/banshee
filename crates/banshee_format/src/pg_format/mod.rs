@@ -4,7 +4,9 @@
 //! using `PgFormatterConfig` for all formatting options.
 
 use banshee_syntax::{Parse, SyntaxKind, SyntaxNode, SyntaxToken};
+use text_size::TextRange;
 
+use crate::edits::{TextEdit, format_parsed_with};
 use crate::pg_formatter::PgFormatterConfig;
 use crate::safe::{self, Style};
 use crate::validate::FormatError;
@@ -23,8 +25,40 @@ pub fn format(source: &str, config: &PgFormatterConfig) -> String {
 
 /// Formats SQL or returns an error when it cannot be safely formatted.
 pub fn try_format(source: &str, config: &PgFormatterConfig) -> Result<String, FormatError> {
-    let parse = banshee_parser::parse(source);
-    safe::format(source, &parse, Style::Pg(config), |root| {
+    try_format_parsed(source, &banshee_parser::parse(source), config)
+}
+
+/// Formats the source text that produced `parse`.
+pub fn try_format_parsed(
+    source: &str,
+    parse: &Parse,
+    config: &PgFormatterConfig,
+) -> Result<String, FormatError> {
+    safe::format(source, parse, Style::Pg(config), |root| print(root, config))
+}
+
+/// Formats SQL with pgFormatter style and returns the edits to apply.
+#[must_use]
+pub fn format_edits(source: &str, config: &PgFormatterConfig) -> Vec<TextEdit> {
+    format_parsed_edits(source, &banshee_parser::parse(source), config, None)
+}
+
+/// Formats whole top-level statements intersecting the selection.
+#[must_use]
+pub fn format_range(source: &str, config: &PgFormatterConfig, range: TextRange) -> Vec<TextEdit> {
+    format_parsed_edits(source, &banshee_parser::parse(source), config, Some(range))
+}
+
+/// Returns edits for the parsed document or its selected statements.
+/// Supply the same source text that produced `parse`. Offsets are in bytes.
+#[must_use]
+pub fn format_parsed_edits(
+    source: &str,
+    parse: &Parse,
+    config: &PgFormatterConfig,
+    selection: Option<TextRange>,
+) -> Vec<TextEdit> {
+    format_parsed_with(source, parse, selection, Style::Pg(config), |root| {
         print(root, config)
     })
 }
@@ -32,10 +66,7 @@ pub fn try_format(source: &str, config: &PgFormatterConfig) -> Result<String, Fo
 /// Formats a parsed SQL tree using pgFormatter style.
 pub fn format_parse(parse: &Parse, config: &PgFormatterConfig) -> String {
     let source = safe::source_text(&parse.syntax());
-    safe::format(&source, parse, Style::Pg(config), |root| {
-        print(root, config)
-    })
-    .unwrap_or(source)
+    try_format_parsed(&source, parse, config).unwrap_or(source)
 }
 
 fn print(root: &SyntaxNode, config: &PgFormatterConfig) -> String {
@@ -395,7 +426,8 @@ pub(crate) fn format_token(token: &SyntaxToken, printer: &mut PgPrinter) {
         | SyntaxKind::SLASH
         | SyntaxKind::PERCENT
         | SyntaxKind::CARET
-        | SyntaxKind::PIPE_PIPE => {
+        | SyntaxKind::PIPE_PIPE
+        | SyntaxKind::GENERIC_OP => {
             printer.write_operator(text);
         }
         SyntaxKind::ARROW | SyntaxKind::ARROW_TEXT => {
@@ -506,11 +538,7 @@ mod tests {
         let sql = "SELECT COUNT(*) FROM users";
         let config = PgFormatterConfig::default().with_function_case(CaseOption::Lower);
         let formatted = format(sql, &config);
-        eprintln!("Formatted output: {:?}", formatted);
-        // COUNT is a reserved keyword in SQL, so it won't be transformed by function_case
-        // Instead, it follows keyword_case. For user-defined functions like my_func(),
-        // function_case would apply.
-        assert!(formatted.contains("COUNT") || formatted.contains("count"));
+        assert!(formatted.contains("count(*)"), "{formatted}");
     }
 
     #[test]

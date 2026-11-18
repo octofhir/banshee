@@ -33,8 +33,22 @@ use banshee_lexer::tokenize;
 use banshee_syntax::Parse;
 
 pub fn parse(source: &str) -> Parse {
-    let tokens = tokenize(source);
-    let mut parser = parser::Parser::new(&tokens, source);
+    parse_sql(source, false)
+}
+
+/// Parses SQL templates that allow a bare `?` in a value position. Infix
+/// question marks still parse as PostgreSQL operators.
+pub fn parse_with_question_mark_parameters(source: &str) -> Parse {
+    parse_sql(source, true)
+}
+
+fn parse_sql(source: &str, question_mark_parameters: bool) -> Parse {
+    let tokens = if question_mark_parameters {
+        banshee_lexer::tokenize_with_question_mark_parameters(source)
+    } else {
+        tokenize(source)
+    };
+    let mut parser = parser::Parser::new(&tokens, source, question_mark_parameters);
     grammar::root(&mut parser);
     let events = parser.finish();
     let (green, errors, interner) = sink::Sink::new(&tokens, source, events).finish();

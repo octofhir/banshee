@@ -11,8 +11,13 @@ use super::{Cli, exit};
 
 #[derive(Args, Debug)]
 pub struct FormatArgs {
-    /// Files or directories to format. Use `-` or omit to read stdin.
+    /// One file for stdout, or files and directories with --write or --check.
+    /// Use `-` or omit to read stdin.
     paths: Vec<PathBuf>,
+
+    /// Use this file's location for config discovery and diagnostics with stdin.
+    #[arg(long, value_name = "PATH", conflicts_with = "write")]
+    stdin_filename: Option<PathBuf>,
 
     /// Rewrite files in place instead of printing to stdout.
     #[arg(long, conflicts_with = "check")]
@@ -28,11 +33,27 @@ pub struct FormatArgs {
 }
 
 pub fn run(args: &FormatArgs, cli: &Cli) -> Result<u8> {
-    let config = cli.load_config(&io::discovery_anchor(&args.paths))?;
-    let inputs = gather_inputs(&args.paths)?;
-
-    if args.write && inputs.iter().any(|input| input.path.is_none()) {
+    let reads_stdin = io::reads_stdin(&args.paths);
+    if args.write && reads_stdin {
         bail!("--write requires file inputs, not stdin");
+    }
+    let anchor = if let Some(filename) = &args.stdin_filename {
+        if !reads_stdin {
+            bail!("--stdin-filename requires stdin input");
+        }
+        let absolute = std::path::absolute(filename)?;
+        absolute.parent().unwrap_or(&absolute).to_path_buf()
+    } else {
+        io::discovery_anchor(&args.paths)
+    };
+
+    let config = cli.load_config(&anchor)?;
+    let mut inputs = gather_inputs(&args.paths)?;
+    if let (Some(filename), [input]) = (&args.stdin_filename, inputs.as_mut_slice()) {
+        input.label = filename.display().to_string();
+    }
+    if !args.write && !args.check && inputs.len() > 1 {
+        bail!("stdout formatting requires one input. Use --write or --check for multiple files");
     }
 
     // Check every input before printing output or changing any file.

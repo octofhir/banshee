@@ -3,7 +3,7 @@
 //! (`upper`/`lower`); defaults are `upper` for keywords and `lower` for
 //! identifiers, which is also Postgres's own folding for unquoted identifiers.
 
-use banshee_syntax::SyntaxKind;
+use banshee_syntax::{SyntaxKind, ast::call_names};
 
 use super::Rule;
 use crate::analyze::{Analyzer, BuiltinLintPack, Diagnostic, Fix, RuleCode, TextEdit};
@@ -31,6 +31,7 @@ impl Rule for Capitalisation {
         let kw_upper = wants_upper(analyzer, "CP01", true);
         let id_upper = wants_upper(analyzer, "CP02", false);
 
+        let mut names = call_names(root).peekable();
         let mut prev_kind: Option<SyntaxKind> = None;
         for element in root.descendants_with_tokens() {
             let Some(token) = element.as_token() else {
@@ -45,6 +46,16 @@ impl Rule for Capitalisation {
             }
             let after_dot = prev_kind == Some(SyntaxKind::DOT);
             prev_kind = Some(kind);
+            while names
+                .next_if(|name| name.range.end() <= range.start())
+                .is_some()
+            {}
+            if names
+                .peek()
+                .is_some_and(|name| name.range.contains_range(range))
+            {
+                continue;
+            }
 
             let (code, upper, case_word) = if kind.is_keyword() {
                 // A non-reserved keyword used as a qualified-name component

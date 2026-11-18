@@ -1,7 +1,7 @@
 use crate::parser::{CompletedMarker, ParseContext, Parser};
 use banshee_syntax::SyntaxKind;
 
-use super::select::{at_ident, at_query_start, expect_ident};
+use super::select::{at_ident, at_query_start, expect_ident, order_by_item};
 use super::{CASE_RECOVERY, EXPR_LIST_RECOVERY, PAREN_RECOVERY, SUBQUERY_RECOVERY};
 
 pub fn expr(p: &mut Parser<'_>) -> Option<CompletedMarker> {
@@ -13,6 +13,9 @@ fn expr_bp(p: &mut Parser<'_>, min_bp: u8) -> Option<CompletedMarker> {
 
     loop {
         let op = p.current();
+        if op == SyntaxKind::OPERATOR_KW && p.nth(1) != SyntaxKind::L_PAREN {
+            break;
+        }
         let (l_bp, r_bp) = match infix_binding_power(op) {
             Some((l, r)) => (l, r),
             None => break,
@@ -39,7 +42,11 @@ fn expr_bp(p: &mut Parser<'_>, min_bp: u8) -> Option<CompletedMarker> {
                 | SyntaxKind::GE
         );
 
-        p.bump(); // operator
+        if op == SyntaxKind::OPERATOR_KW {
+            operator_reference(p);
+        } else {
+            p.bump();
+        }
 
         // For JSONPath operators, if the RHS is a string literal, mark it specially
         let has_rhs = if is_jsonpath_op && p.at(SyntaxKind::STRING) {
@@ -79,6 +86,7 @@ fn expr_bp(p: &mut Parser<'_>, min_bp: u8) -> Option<CompletedMarker> {
         lhs = m.complete(p, SyntaxKind::BINARY_EXPR);
 
         if !has_rhs {
+            p.error("expected expression after binary operator");
             break;
         }
     }
@@ -94,13 +102,31 @@ fn lhs(p: &mut Parser<'_>) -> Option<CompletedMarker> {
             p.bump();
             // NOT binds looser than comparison but tighter than AND/OR, so
             // `NOT a = b` parses as `NOT (a = b)`.
-            expr_bp(p, NOT_BP);
+            if expr_bp(p, NOT_BP).is_none() {
+                p.error("expected expression after NOT");
+            }
             m.complete(p, SyntaxKind::UNARY_EXPR)
         }
         SyntaxKind::MINUS | SyntaxKind::PLUS => {
             let m = p.start();
             p.bump();
-            expr_bp(p, PREFIX_BP);
+            if expr_bp(p, PREFIX_BP).is_none() {
+                p.error("expected expression after unary operator");
+            }
+            m.complete(p, SyntaxKind::UNARY_EXPR)
+        }
+        kind @ (SyntaxKind::OPERATOR_KW | SyntaxKind::GENERIC_OP | SyntaxKind::TILDE)
+            if kind != SyntaxKind::OPERATOR_KW || p.nth(1) == SyntaxKind::L_PAREN =>
+        {
+            let m = p.start();
+            if p.at(SyntaxKind::OPERATOR_KW) {
+                operator_reference(p);
+            } else {
+                p.bump();
+            }
+            if expr_bp(p, GENERIC_OP_BP + 1).is_none() {
+                p.error("expected expression after prefix operator");
+            }
             m.complete(p, SyntaxKind::UNARY_EXPR)
         }
 
@@ -156,6 +182,11 @@ fn lhs(p: &mut Parser<'_>) -> Option<CompletedMarker> {
 
         // Parameter
         SyntaxKind::PARAM => {
+            let m = p.start();
+            p.bump();
+            m.complete(p, SyntaxKind::PARAM_REF)
+        }
+        SyntaxKind::QUESTION if p.question_mark_parameters => {
             let m = p.start();
             p.bump();
             m.complete(p, SyntaxKind::PARAM_REF)
@@ -612,14 +643,28 @@ fn order_by_in_aggregate(p: &mut Parser<'_>) {
     }
 }
 
-fn order_by_item(p: &mut Parser<'_>) {
-    let m = p.start();
-    expr(p);
-    let _ = p.eat(SyntaxKind::ASC_KW) || p.eat(SyntaxKind::DESC_KW);
-    if p.eat(SyntaxKind::NULLS_KW) {
-        let _ = p.eat(SyntaxKind::FIRST_KW) || p.eat(SyntaxKind::LAST_KW);
+pub(super) fn operator_reference(p: &mut Parser<'_>) {
+    let qualified = p.eat(SyntaxKind::OPERATOR_KW);
+    if qualified {
+        p.expect(SyntaxKind::L_PAREN);
+        while p.nth(1) == SyntaxKind::DOT && p.current().can_be_identifier() {
+            p.bump();
+            p.bump();
+        }
     }
-    m.complete(p, SyntaxKind::ORDER_BY_ITEM);
+    let text = p.nth_text(0);
+    if p.current() != SyntaxKind::ERROR
+        && text != "=>"
+        && !text.is_empty()
+        && text.bytes().all(|ch| b"+-*/<>=~!@#%^&|`?".contains(&ch))
+    {
+        p.bump();
+    } else {
+        p.error("expected operator symbol");
+    }
+    if qualified {
+        p.expect(SyntaxKind::R_PAREN);
+    }
 }
 
 fn over_clause(p: &mut Parser<'_>) {
@@ -1022,6 +1067,8 @@ fn array_expr(p: &mut Parser<'_>) -> CompletedMarker {
         parse_subquery_with_recovery(p);
         p.pop_context();
         p.expect_recover(SyntaxKind::R_PAREN, PAREN_RECOVERY);
+    } else {
+        p.error_with_context("expected ( or [ after ARRAY");
     }
 
     m.complete(p, SyntaxKind::ARRAY_EXPR)
@@ -1118,6 +1165,7 @@ pub(super) fn type_name(p: &mut Parser<'_>, context: &str) {
 
 // Binding power constants
 const PREFIX_BP: u8 = 15;
+const GENERIC_OP_BP: u8 = 7;
 const BETWEEN_BP: u8 = 7;
 const LIKE_BP: u8 = 7;
 /// Operand binding power for prefix `NOT`: above AND (4) so it captures a full
@@ -1146,6 +1194,7 @@ fn infix_binding_power(op: SyntaxKind) -> Option<(u8, u8)> {
         // Additive
         SyntaxKind::PLUS | SyntaxKind::MINUS => (8, 9),
 
+        SyntaxKind::GENERIC_OP | SyntaxKind::OPERATOR_KW => (GENERIC_OP_BP, GENERIC_OP_BP + 1),
         // Bitwise and shift operators (below additive, above comparison).
         SyntaxKind::AMP
         | SyntaxKind::PIPE

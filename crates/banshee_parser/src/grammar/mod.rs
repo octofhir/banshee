@@ -20,8 +20,9 @@ pub fn root(p: &mut Parser<'_>) {
             continue;
         }
         statement(p);
-        // Consume optional semicolon
-        p.eat(SyntaxKind::SEMICOLON);
+        if !p.eat(SyntaxKind::SEMICOLON) && !p.at_end() {
+            p.error("expected ';' between statements");
+        }
     }
 
     m.complete(p, SyntaxKind::SOURCE_FILE);

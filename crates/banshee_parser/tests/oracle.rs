@@ -239,6 +239,104 @@ fn oracle_corpus_matches_postgres() {
 }
 
 #[test]
+fn oracle_agrees_on_numeric_literals_operators_and_unicode_escapes() {
+    for sql in [
+        "SELECT 1., .5, 1_000, 1.2_3e+4_5, 0x_FF, 0o17, 0b10_10;",
+        "SELECT embedding <-> $1, embedding <=> $1, embedding <#> $1 FROM docs;",
+        "SELECT a OPERATOR(pg_catalog.+) b FROM t ORDER BY a USING OPERATOR(pg_catalog.<);",
+        "SELECT operator, a operator FROM t;",
+        "SELECT @ -1, 2*-1, 3 + /* note */ 4;",
+        "SELECT U&'d!0061t' UESCAPE '!';",
+        "SELECT U&'d!0061t' UESCAPE E'!';",
+        "SELECT U&\"d!0061t\" UESCAPE '!' FROM t;",
+    ] {
+        assert!(pg_accepts(sql), "PostgreSQL rejected {sql}");
+        let parse = banshee_parser::parse(sql);
+        assert!(parse.errors().is_empty(), "{sql}: {:?}", parse.errors());
+    }
+    for sql in [
+        "SELECT 1e+;",
+        "SELECT 1e;",
+        "SELECT 123abc;",
+        "SELECT 1__0;",
+        "SELECT 1._2;",
+        "SELECT 0b102;",
+        "SELECT 0x_;",
+        "SELECT $name;",
+        "SELECT $2147483648;",
+        "SELECT a OPERATOR(pg_catalog.) b;",
+        "SELECT U&'test' UESCAPE 'a';",
+    ] {
+        assert!(!pg_accepts(sql), "PostgreSQL accepted {sql}");
+        assert!(
+            !banshee_parser::parse(sql).errors().is_empty(),
+            "Banshee accepted {sql}"
+        );
+    }
+}
+
+#[test]
+fn oracle_rejects_missing_select_items_and_statement_separators() {
+    for sql in [
+        "SELECT ,;",
+        "SELECT a, FROM t;",
+        "SELECT a,,b;",
+        "SELECT a,",
+        "SELECT a +, b;",
+        "SELECT a, -;",
+        "SELECT NOT;",
+        "SELECT 1 SELECT 2;",
+        "SELECT 1\nUPDATE t SET i = 1;",
+        "CREATE FUNCTION f() RETURNS int LANGUAGE SQL BEGIN ATOMIC SELECT 1 END;",
+        "CREATE FUNCTION f() RETURNS int LANGUAGE SQL BEGIN ATOMIC SELECT 1; END SELECT 2;",
+    ] {
+        assert!(!pg_accepts(sql), "PostgreSQL accepted {sql}");
+        assert!(
+            !banshee_parser::parse(sql).errors().is_empty(),
+            "Banshee accepted {sql}"
+        );
+    }
+
+    for sql in [
+        "SELECT FROM t;",
+        "SELECT;",
+        "SELECT a FROM t; SELECT b FROM t",
+    ] {
+        assert!(pg_accepts(sql), "PostgreSQL rejected {sql}");
+        assert!(
+            banshee_parser::parse(sql).errors().is_empty(),
+            "Banshee rejected {sql}"
+        );
+    }
+}
+
+#[test]
+fn oracle_accepts_sql_routine_bodies_as_part_of_one_statement() {
+    use banshee_syntax::SyntaxKind;
+
+    for sql in [
+        "CREATE FUNCTION f() RETURNS int LANGUAGE SQL BEGIN ATOMIC SELECT 1; SELECT 2; END;",
+        "CREATE FUNCTION f() RETURNS int LANGUAGE SQL BEGIN ATOMIC RETURN 1; END;",
+        "CREATE PROCEDURE p() LANGUAGE SQL BEGIN ATOMIC INSERT INTO t VALUES (1); END;",
+    ] {
+        assert!(pg_accepts(sql), "PostgreSQL rejected {sql}");
+        let parse = banshee_parser::parse(sql);
+        assert!(parse.errors().is_empty(), "{sql}: {:?}", parse.errors());
+        let tree = parse.syntax();
+        let statements: Vec<_> = tree.children().collect();
+        let [routine] = statements.as_slice() else {
+            panic!("expected one routine for {sql}");
+        };
+        assert_eq!(routine.kind(), SyntaxKind::CREATE_FUNCTION_STMT);
+        assert!(
+            routine
+                .children()
+                .any(|node| node.kind() == SyntaxKind::SQL_ROUTINE_BODY)
+        );
+    }
+}
+
+#[test]
 fn oracle_ddl_corpus_matches_postgres() {
     check_corpus(DDL_CORPUS);
 }

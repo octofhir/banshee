@@ -19,9 +19,9 @@ pub struct CompleteArgs {
     #[arg(long)]
     offset: u32,
 
-    /// Maximum number of items to print.
-    #[arg(long, default_value_t = 25)]
-    limit: usize,
+    /// Override completion.max-items (0 = unlimited).
+    #[arg(long)]
+    limit: Option<usize>,
 }
 
 pub fn run(args: &CompleteArgs, cli: &Cli) -> Result<u8> {
@@ -33,7 +33,18 @@ pub fn run(args: &CompleteArgs, cli: &Cli) -> Result<u8> {
 
     let provider = super::schema::resolve(&config)?;
 
-    let mut request = CompletionRequest::new(&input.text, TextSize::from(args.offset));
+    let templated = config.templater.render(&input.text);
+    let offset = TextSize::from(args.offset);
+    let (source, offset) = templated
+        .as_ref()
+        .map_or((input.text.as_str(), offset), |t| {
+            (t.text(), t.rendered_offset(offset))
+        });
+    let settings = &config.completion;
+    let mut request = CompletionRequest::new(source, offset)
+        .with_keywords(settings.keywords)
+        .with_functions(settings.functions)
+        .with_limit(args.limit.unwrap_or(settings.max_items));
     if let Some(p) = &provider {
         request = request.with_schema_provider(p).with_function_provider(p);
     }
@@ -44,7 +55,7 @@ pub fn run(args: &CompleteArgs, cli: &Cli) -> Result<u8> {
         return Ok(exit::OK);
     }
 
-    for item in result.items.iter().take(args.limit) {
+    for item in result.items {
         let detail = item.detail.as_deref().unwrap_or("");
         println!("{:<24} {:?}  {}", item.label, item.kind, detail);
     }

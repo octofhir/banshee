@@ -1,7 +1,7 @@
 //! Live Postgres schema introspection (requires the `db` feature).
 //!
-//! Queries `information_schema` for tables, columns, primary keys and
-//! functions in a target schema and assembles a [`SchemaSnapshot`]. The result
+//! Reads tables, columns, primary keys and function signatures from the
+//! PostgreSQL catalogs and assembles a [`SchemaSnapshot`]. The result
 //! is plain data and can be cached and reused without a database connection.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -160,24 +160,55 @@ async fn fetch_functions(
     schema: &str,
 ) -> Result<Vec<FunctionEntry>, sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT routine_name, data_type \
-         FROM information_schema.routines \
-         WHERE routine_schema = $1 AND routine_type = 'FUNCTION'",
+        r#"
+        SELECT p.proname::text AS name,
+               pg_catalog.pg_get_function_result(p.oid) AS return_type,
+               p.proretset AS returns_set,
+               COALESCE((
+                   SELECT pg_catalog.jsonb_agg(
+                       pg_catalog.jsonb_build_object(
+                           'name', NULLIF(p.proargnames[a.position::int], ''),
+                           'data_type', pg_catalog.format_type(a.type_oid, NULL),
+                           'mode', CASE p.proargmodes[a.position::int]
+                               WHEN 'b' THEN 'in_out'
+                               WHEN 'v' THEN 'variadic'
+                               ELSE 'in'
+                           END,
+                           'default', CASE WHEN pg_catalog.pg_has_role(p.proowner, 'USAGE')
+                               THEN pg_catalog.pg_get_function_arg_default(p.oid, a.position::int)
+                           END
+                       ) ORDER BY a.position
+                   )
+                   FROM pg_catalog.unnest(COALESCE(p.proallargtypes, p.proargtypes::oid[]))
+                       WITH ORDINALITY AS a(type_oid, position)
+                   WHERE COALESCE(p.proargmodes[a.position::int], 'i') IN ('i', 'b', 'v')
+               ), '[]'::jsonb)::text AS arguments
+        FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = $1
+          AND p.prokind <> 'p'
+          AND (pg_catalog.pg_has_role(p.proowner, 'USAGE')
+               OR pg_catalog.has_function_privilege(p.oid, 'EXECUTE'))
+        ORDER BY p.proname, p.pronargs, p.oid
+        "#,
     )
     .bind(schema)
     .fetch_all(pool)
     .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| FunctionEntry {
-            schema: schema.to_string(),
-            name: row.get("routine_name"),
-            return_type: row
-                .try_get::<String, _>("data_type")
-                .unwrap_or_else(|_| "void".to_string()),
+    rows.into_iter()
+        .map(|row| {
+            let arguments = serde_json::from_str(row.try_get("arguments")?)
+                .map_err(|error| sqlx::Error::Decode(Box::new(error)))?;
+            Ok(FunctionEntry {
+                schema: schema.to_owned(),
+                name: row.try_get("name")?,
+                return_type: row.try_get("return_type")?,
+                arguments,
+                returns_set: row.try_get("returns_set")?,
+            })
         })
-        .collect())
+        .collect()
 }
 
 // === JSONB shape sampling ====================================================

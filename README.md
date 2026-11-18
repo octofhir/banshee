@@ -66,7 +66,7 @@ leave it off and the binary stays async-free, using a cached schema if present.
 ```
 banshee format [--write|--check] [files…|-]
 banshee lint   [--format human|json|github|sarif] [--statistics] [--breaking] [files…|-]
-banshee fix    [--diff] [files…|-]
+banshee fix    [--diff] [--unsafe-fixes] [files…|-]
 banshee parse  [--format tree|json] [files…|-]
 banshee rules [--format human|json] [--group <category|prefix>]   # list lint rules
 banshee explain <CODE>        # detailed rule description with examples
@@ -78,9 +78,10 @@ banshee lsp                   # language server over stdio
 Inputs are files, directories (walked for `*.sql`), or stdin (`-`). Exit codes:
 `0` clean, `1` findings / unformatted, `2` error.
 
-`format` checks that output preserves SQL tokens and significant whitespace.
-If it cannot safely format an input, it reports the file and exits with code
-`2` before writing any formatted SQL.
+`format` prints one input to stdout. Use `--write` or `--check` for multiple
+files. The formatter checks that output preserves SQL tokens and significant
+whitespace. If it cannot safely format an input, it reports the file and exits
+with code `2` before writing any formatted SQL.
 
 ```sh
 echo "select id,name from users where active=true" | banshee format -
@@ -111,7 +112,7 @@ Use the library without the command-line, formatter, completion or language-serv
 
 ```toml
 [dependencies]
-banshee = { version = "0.2.9", default-features = false }
+banshee = { version = "0.2.10", default-features = false }
 ```
 
 ```rust
@@ -236,9 +237,10 @@ Prefixes: `AL` aliasing, `AM` ambiguity, `ST` structure, `SF` safety, `JB`
 JSONB, `CV` convention, `CP` capitalisation, `RF` references, `MG` migration
 safety.
 
-`banshee fix` applies every available autofix; `banshee explain <CODE>` prints the
-rationale and a before/after example. Reference checks (RF\*) only run when a
-schema is available, so they never produce false positives offline.
+`banshee fix` applies capitalization fixes by default. Add `--unsafe-fixes`
+to include rewrites that can change SQL behavior and use `--diff` to preview.
+`banshee explain <CODE>` prints the rationale and a before/after example.
+Reference checks (RF\*) require a schema.
 
 ### Suppressing diagnostics inline
 
@@ -263,18 +265,17 @@ code in that family; a full code (`AM04`) matches only itself.
 ## Templating
 
 Application SQL often contains parameter placeholders that are not valid
-PostgreSQL on their own (`:name`, `?`, `%(name)s`). Enable the templater to
-substitute them before parsing so the statement still lints; findings map back
-to the original text and the placeholders survive `banshee fix` untouched.
+PostgreSQL on their own (`:name`, `?`, `%(name)s`). Enable the templater for
+analysis in the CLI and language server. Findings and editor highlights use
+the original text, and fixes that overlap a placeholder are skipped.
 
 ```toml
 [templater]
 style = "colon"        # colon (:name / :1) | question-mark (?) | percent (%s, %(name)s)
 ```
 
-Native Postgres parameters (`$1`, `$name`) are already valid and are never
-touched, and placeholders inside strings, dollar-quotes and comments are left
-alone. See [`examples/templater.sql`](examples/templater.sql).
+PostgreSQL positional parameters such as `$1`, along with quoted identifiers,
+string literals and comments, are preserved. See [`examples/templater.sql`](examples/templater.sql).
 
 ## Schema-aware features
 
@@ -321,9 +322,11 @@ findings shown inline on the PR (`github` format by default):
 ```yaml
 - uses: octofhir/banshee@v0.2.2
   with:
-    command: lint        # or: format
+    command: lint
     args: migrations/
 ```
+
+The Action's `format` command runs `banshee format --check`.
 
 For code scanning, emit SARIF and upload it; the Action writes the file for you:
 

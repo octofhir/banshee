@@ -6,15 +6,18 @@
 
 use banshee_completion::providers::{FunctionProvider, SchemaProvider as CompletionSchemaProvider};
 use banshee_completion::types::{
-    ColumnInfo as CompletionColumn, FunctionInfo, JsonbField, JsonbFieldType, JsonbSchema,
-    TableInfo as CompletionTable,
+    ArgMode, ColumnInfo as CompletionColumn, FunctionArg, FunctionInfo, JsonbField, JsonbFieldType,
+    JsonbSchema, TableInfo as CompletionTable,
 };
 use banshee_hir::{
     ColumnInfo as HirColumn, DataType, SchemaProvider as HirSchemaProvider, TableInfo as HirTable,
     TableType as HirTableType,
 };
 
-use crate::snapshot::{JsonbShape, JsonbType, SchemaSnapshot, TableEntry, TableKind};
+use crate::snapshot::{
+    FunctionEntry, FunctionParameterMode, JsonbShape, JsonbType, SchemaSnapshot, TableEntry,
+    TableKind,
+};
 
 /// A schema provider reading from an in-memory snapshot.
 #[derive(Debug, Clone)]
@@ -170,21 +173,45 @@ fn build_jsonb_schema(shape: &JsonbShape) -> JsonbSchema {
 
 impl FunctionProvider for CachedSchemaProvider {
     fn functions(&self) -> Vec<FunctionInfo> {
+        self.snapshot.functions.iter().map(function_info).collect()
+    }
+
+    fn overloads(&self, schema: Option<&str>, name: &str) -> Vec<FunctionInfo> {
+        let schema = schema.unwrap_or(&self.snapshot.default_schema);
         self.snapshot
             .functions
             .iter()
-            .map(|f| {
-                FunctionInfo::new(f.name.clone(), f.return_type.clone())
-                    .with_schema(f.schema.clone())
-            })
+            .filter(|f| f.schema == schema && f.name == name)
+            .map(function_info)
             .collect()
     }
+}
+
+fn function_info(function: &FunctionEntry) -> FunctionInfo {
+    let args = function
+        .arguments
+        .iter()
+        .map(|arg| FunctionArg {
+            name: arg.name.clone(),
+            data_type: arg.data_type.clone(),
+            mode: match arg.mode {
+                FunctionParameterMode::In => ArgMode::In,
+                FunctionParameterMode::InOut => ArgMode::InOut,
+                FunctionParameterMode::Variadic => ArgMode::Variadic,
+            },
+            default: arg.default.clone(),
+        })
+        .collect();
+    FunctionInfo::new(&function.name, &function.return_type)
+        .with_schema(&function.schema)
+        .with_args(args)
+        .with_returns_set(function.returns_set)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot::{ColumnEntry, FunctionEntry, JsonbFieldShape, JsonbShape};
+    use crate::snapshot::{ColumnEntry, JsonbFieldShape, JsonbShape};
 
     fn sample() -> CachedSchemaProvider {
         let mut snap = SchemaSnapshot::new("fp", "public");
@@ -234,6 +261,8 @@ mod tests {
             schema: "public".into(),
             name: "now".into(),
             return_type: "timestamptz".into(),
+            arguments: Vec::new(),
+            returns_set: false,
         });
         CachedSchemaProvider::new(snap)
     }

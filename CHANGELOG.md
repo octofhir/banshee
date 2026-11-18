@@ -4,6 +4,76 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project tracks
 the latest stable Rust toolchain.
 
+## Unreleased
+
+## 0.2.10 — 2026-11-18
+
+- Support PostgreSQL numeric literals with base prefixes, digit separators,
+  and trailing decimal points. Reject malformed numbers and positional
+  parameters.
+- Parse PostgreSQL symbolic operators, qualified `OPERATOR(...)` references,
+  and `ORDER BY ... USING`.
+- Preserve Unicode strings and identifiers with an explicit `UESCAPE` clause.
+- Use one input for stdout formatting. Batch formatting uses `--write` or
+  `--check`.
+- Add `format --stdin-filename` for editor buffers that need file-relative
+  configuration and diagnostics.
+- Limit editor range formatting to the top-level statements touched by the
+  selection and validate the resulting document before returning edits.
+- Format valid selected statements in editor buffers with syntax errors in
+  neighbouring statements when their boundaries are clear.
+- Reuse each open document's parse when formatting the file or a selection.
+  For templated documents, parse the original text on demand to distinguish
+  native SQL operators from placeholders.
+- Embed the language server in a Rust host through a per-client session with
+  URI-based settings and host-provided schema data.
+- Accept incremental LSP document changes, including ordered batches of UTF-16
+  ranges, and recover unsynchronized documents from a full text snapshot.
+- Preserve hand-formatted statements with `-- fmt: off`, `-- fmt: on`, and
+  `-- fmt: skip` in CLI and editor formatting.
+- Format SQL with configured placeholders in the CLI and editor while preserving
+  parameter spelling and original document offsets.
+- Reject missing SELECT expressions and statement separators, and parse
+  `BEGIN ATOMIC` blocks inside their SQL function or procedure.
+- Preserve lint suppression lines through formatting, including when removing
+  ordinary comments.
+- Prefer native SQL consistently across formatting, linting, and fixes.
+  Distinguish bare question-mark parameters from PostgreSQL operators by
+  expression position.
+- Run `format --check` when the GitHub Action is configured for formatting.
+- Preserve the spelling of function names and call-like forms such as
+  `array(...)` across formatter presets and capitalization fixes.
+- Apply capitalization fixes by default. Require `fix --unsafe-fixes` to
+  include structural rewrites. Apply each fix as a unit and validate the
+  resulting SQL before writing the batch.
+- Reuse document syntax and line positions across LSP requests. Publish
+  diagnostics with their document version and clear them when the file closes.
+- Fix LSP highlighting for Unicode and multiline SQL tokens, and preserve
+  formatting edits that touch CRLF line endings.
+- Use the same built-in catalog for function completion and offline signature
+  help. Track the active argument inside nested calls and conditional
+  expressions, and respect schema-qualified function names.
+- Use the configured placeholder style and lint settings in the language
+  server. Map diagnostics, quick fixes, and highlights to the original SQL.
+- Respect PostgreSQL quotes and comments when finding placeholders, and
+  preserve adjacent placeholders when mapping edits back to the source.
+- Cache PostgreSQL function arguments and overloads and show them in editor
+  signature help, including for functions used in `FROM`. Refresh the schema
+  cache to load the new metadata.
+- Validate editor quick fixes with the same SQL and placeholder checks as the
+  CLI. Use document revisions for supported clients and validate deferred
+  edits when the editor requests them.
+- Discover the nearest `banshee.toml` and its schema cache for each local
+  document in the language server. An explicit `--config` applies to the
+  entire session.
+- Honor completion settings in the CLI and editor, rank candidates before
+  applying the item limit, and report incomplete lists to LSP clients.
+- Suggest tables after a schema qualifier in a `FROM` clause, including
+  quoted schemas.
+- Keep leading-comma layouts stable around subscripts and JSON access.
+  Check repeated formatting and PostgreSQL parse trees across separator,
+  comment, and line-ending variations.
+
 ## 0.2.9 — 2026-11-18
 
 - Guard formatter output for all three presets. Preserve SQL tokens, comments,

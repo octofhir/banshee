@@ -12,7 +12,13 @@ description = "Unified, serde-based configuration for the banshee SQL toolchain.
 [dependencies]
 serde = { workspace = true }
 toml = { workspace = true }
+text-size.workspace = true
 banshee_format = { workspace = true }
+banshee_hir = { workspace = true }
+banshee_parser = { workspace = true }
+banshee_syntax = { workspace = true }
 banshee_templater = { workspace = true }
 
 [dev-dependencies]
+pg_parse.workspace = true
+serde_json.workspace = true

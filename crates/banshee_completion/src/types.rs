@@ -3,6 +3,22 @@
 //! These types are decoupled from LSP - applications transform them
 //! to LSP types as needed.
 
+use std::borrow::Cow;
+
+pub(crate) fn display_identifier(name: &str) -> Cow<'_, str> {
+    let mut bytes = name.bytes();
+    if bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_lowercase() || b == b'_')
+        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'$'))
+        && !banshee_syntax::keyword_from_str(name).is_some_and(|kind| kind.is_reserved_keyword())
+    {
+        Cow::Borrowed(name)
+    } else {
+        Cow::Owned(format!("\"{}\"", name.replace('"', "\"\"")))
+    }
+}
+
 /// Information about a database table.
 #[must_use]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -212,18 +228,13 @@ impl FunctionInfo {
 
     /// Returns the function signature as a string.
     pub fn signature(&self) -> String {
-        let args: Vec<String> = self
-            .args
-            .iter()
-            .map(|a| {
-                if let Some(ref name) = a.name {
-                    format!("{} {}", name, a.data_type)
-                } else {
-                    a.data_type.clone()
-                }
-            })
-            .collect();
-        format!("{}({}) -> {}", self.name, args.join(", "), self.return_type)
+        let args: Vec<_> = self.args.iter().map(FunctionArg::label).collect();
+        let name = if self.schema.is_some() {
+            display_identifier(&self.name)
+        } else {
+            Cow::Borrowed(self.name.as_str())
+        };
+        format!("{name}({}) -> {}", args.join(", "), self.return_type)
     }
 }
 
@@ -271,6 +282,27 @@ impl FunctionArg {
     pub fn with_default(mut self, default: impl Into<String>) -> Self {
         self.default = Some(default.into());
         self
+    }
+
+    /// Returns the argument as displayed in signature help.
+    pub fn label(&self) -> String {
+        let mut label = String::new();
+        label.push_str(match self.mode {
+            ArgMode::In => "",
+            ArgMode::Out => "OUT ",
+            ArgMode::InOut => "INOUT ",
+            ArgMode::Variadic => "VARIADIC ",
+        });
+        if let Some(name) = &self.name {
+            label.push_str(&display_identifier(name));
+            label.push(' ');
+        }
+        label.push_str(&self.data_type);
+        if let Some(default) = &self.default {
+            label.push_str(" = ");
+            label.push_str(default);
+        }
+        label
     }
 }
 

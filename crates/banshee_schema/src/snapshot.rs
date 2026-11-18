@@ -6,15 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Current on-disk format version. Bumped on incompatible changes so stale
-/// caches are ignored rather than misread.
-pub const SNAPSHOT_VERSION: u32 = 1;
-
 /// A point-in-time view of a database schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchemaSnapshot {
-    /// On-disk format version.
-    pub version: u32,
     /// Fingerprint of the connection + schema this was fetched from, used to
     /// invalidate the cache when the target changes.
     pub fingerprint: String,
@@ -32,7 +26,6 @@ impl SchemaSnapshot {
     /// Creates an empty snapshot stamped with the given fingerprint and schema.
     pub fn new(fingerprint: impl Into<String>, default_schema: impl Into<String>) -> Self {
         Self {
-            version: SNAPSHOT_VERSION,
             fingerprint: fingerprint.into(),
             fetched_at: now_unix(),
             default_schema: default_schema.into(),
@@ -42,11 +35,10 @@ impl SchemaSnapshot {
     }
 
     /// Whether this snapshot is still within `ttl_secs` of its fetch time and
-    /// matches the expected fingerprint and format version.
+    /// matches the expected fingerprint.
     #[must_use]
     pub fn is_fresh(&self, expected_fingerprint: &str, ttl_secs: u64) -> bool {
-        self.version == SNAPSHOT_VERSION
-            && self.fingerprint == expected_fingerprint
+        self.fingerprint == expected_fingerprint
             && now_unix().saturating_sub(self.fetched_at) <= ttl_secs
     }
 }
@@ -135,6 +127,27 @@ pub struct FunctionEntry {
     pub schema: String,
     pub name: String,
     pub return_type: String,
+    /// Input arguments in call order, including INOUT and VARIADIC arguments.
+    pub arguments: Vec<FunctionParameter>,
+    pub returns_set: bool,
+}
+
+/// An argument from the PostgreSQL catalog.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionParameter {
+    pub name: Option<String>,
+    pub data_type: String,
+    pub mode: FunctionParameterMode,
+    /// The default expression when the connected role can see it.
+    pub default: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionParameterMode {
+    In,
+    InOut,
+    Variadic,
 }
 
 /// Seconds since the Unix epoch, saturating to 0 before 1970.

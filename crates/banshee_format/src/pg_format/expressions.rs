@@ -526,7 +526,7 @@ pub(crate) fn format_jsonb_access(node: &SyntaxNode, printer: &mut PgPrinter) {
                 format_expression(child, printer);
             }
             cstree::util::NodeOrToken::Token(token) => {
-                printer.write(token.text());
+                format_token(token, printer);
             }
         }
     }

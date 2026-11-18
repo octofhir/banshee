@@ -12,6 +12,7 @@ mod format_cmd;
 mod init_cmd;
 mod io;
 mod lint_cmd;
+mod lsp_cmd;
 mod parse_cmd;
 mod render;
 mod rules_cmd;
@@ -118,7 +119,7 @@ impl Cli {
             Command::Init(args) => init_cmd::run(args),
             Command::Explain(args) => explain_cmd::run(args),
             Command::Complete(args) => complete_cmd::run(args, &cli),
-            Command::Lsp => run_lsp(&cli),
+            Command::Lsp => lsp_cmd::run(&cli),
         };
         match result {
             Ok(code) => ExitCode::from(code),
@@ -139,11 +140,4 @@ impl Cli {
             None => Ok(BansheeConfig::discover(near)?),
         }
     }
-}
-
-fn run_lsp(cli: &Cli) -> anyhow::Result<u8> {
-    let config = cli.load_config(&PathBuf::from("."))?;
-    let schema = schema::resolve(&config)?;
-    banshee_lsp::run_stdio(config, schema)?;
-    Ok(exit::OK)
 }

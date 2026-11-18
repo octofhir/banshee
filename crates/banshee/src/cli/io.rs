@@ -4,7 +4,6 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use banshee_hir::TextEdit;
 
 /// A unit of SQL to operate on: either a file or stdin.
 pub struct InputFile {
@@ -21,8 +20,7 @@ pub struct InputFile {
 /// With no paths, or a single `-`, reads stdin. Directories are walked
 /// recursively for `*.sql` files.
 pub fn gather_inputs(paths: &[PathBuf]) -> Result<Vec<InputFile>> {
-    let use_stdin = paths.is_empty() || (paths.len() == 1 && paths[0].as_os_str() == "-");
-    if use_stdin {
+    if reads_stdin(paths) {
         let mut text = String::new();
         std::io::stdin()
             .read_to_string(&mut text)
@@ -43,6 +41,10 @@ pub fn gather_inputs(paths: &[PathBuf]) -> Result<Vec<InputFile>> {
         }
     }
     Ok(inputs)
+}
+
+pub fn reads_stdin(paths: &[PathBuf]) -> bool {
+    paths.is_empty() || (paths.len() == 1 && paths[0].as_os_str() == "-")
 }
 
 /// Drops inputs whose path matches any `exclude-paths` glob (e.g. legacy
@@ -109,42 +111,6 @@ fn collect_sql_files(dir: &Path, out: &mut Vec<InputFile>) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Applies a set of text edits to `source`.
-///
-/// On overlap the longer edit wins, so a structural rewrite (e.g. removing
-/// `ELSE NULL`) takes precedence over a token tweak it contains (e.g.
-/// upper-casing that `NULL`). Selected edits are applied right-to-left so
-/// earlier offsets stay valid.
-pub fn apply_edits(source: &str, mut edits: Vec<TextEdit>) -> String {
-    // Longest edit first at each start position.
-    edits.sort_by_key(|e| {
-        let start = u32::from(e.range.start());
-        let len = u32::from(e.range.end()) - start;
-        (start, std::cmp::Reverse(len))
-    });
-
-    // Greedily keep non-overlapping edits, preferring the longer one.
-    let mut selected: Vec<&TextEdit> = Vec::new();
-    let mut covered_to = 0u32;
-    for edit in &edits {
-        let start = u32::from(edit.range.start());
-        let end = u32::from(edit.range.end());
-        if start < covered_to {
-            continue; // overlaps an already-selected (longer/earlier) edit
-        }
-        selected.push(edit);
-        covered_to = end;
-    }
-
-    let mut result = source.to_string();
-    for edit in selected.into_iter().rev() {
-        let start = u32::from(edit.range.start()) as usize;
-        let end = u32::from(edit.range.end()) as usize;
-        result.replace_range(start..end, &edit.new_text);
-    }
-    result
 }
 
 /// Escapes a string as a JSON string literal (including surrounding quotes).
