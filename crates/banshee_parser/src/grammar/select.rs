@@ -2,9 +2,9 @@ use crate::parser::{ParseContext, Parser};
 use crate::token_set::TokenSet;
 use banshee_syntax::SyntaxKind;
 
-use super::expressions::expr;
 use super::expressions::frame_clause;
 use super::expressions::type_name;
+use super::expressions::{expr, required_expr};
 use super::{CLAUSE_RECOVERY, JOIN_RECOVERY, PAREN_RECOVERY, SUBQUERY_RECOVERY};
 
 /// Checks if the current token is an identifier (IDENT or QUOTED_IDENT).
@@ -116,12 +116,11 @@ fn values_query(p: &mut Parser<'_>) {
 fn values_row(p: &mut Parser<'_>) {
     let m = p.start();
     p.expect_recover(SyntaxKind::L_PAREN, PAREN_RECOVERY);
-    if !p.at(SyntaxKind::R_PAREN) {
-        expr(p);
-        while p.eat(SyntaxKind::COMMA) {
-            expr(p);
-        }
+    required_expr(p);
+    while p.eat(SyntaxKind::COMMA) {
+        required_expr(p);
     }
+
     p.expect_recover(SyntaxKind::R_PAREN, PAREN_RECOVERY);
     m.complete(p, SyntaxKind::VALUES_ROW);
 }
@@ -144,9 +143,9 @@ fn select_core(p: &mut Parser<'_>) {
     if p.eat(SyntaxKind::DISTINCT_KW) {
         if p.eat(SyntaxKind::ON_KW) {
             p.expect_recover(SyntaxKind::L_PAREN, PAREN_RECOVERY);
-            expr(p);
+            required_expr(p);
             while p.eat(SyntaxKind::COMMA) {
-                expr(p);
+                required_expr(p);
             }
             p.expect_recover(SyntaxKind::R_PAREN, PAREN_RECOVERY);
         }
@@ -495,7 +494,7 @@ fn join_expr(
     if !cross && !natural {
         if p.eat(SyntaxKind::ON_KW) {
             let cm = p.start();
-            expr(p);
+            required_expr(p);
             cm.complete(p, SyntaxKind::JOIN_CONDITION);
         } else if p.eat(SyntaxKind::USING_KW) {
             let cm = p.start();
@@ -516,7 +515,7 @@ fn join_expr(
 fn where_clause(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(); // WHERE
-    expr(p);
+    required_expr(p);
     m.complete(p, SyntaxKind::WHERE_CLAUSE);
 }
 
@@ -555,7 +554,7 @@ fn group_by_elem(p: &mut Parser<'_>) {
         grouping_set_list(p);
         p.expect_recover(SyntaxKind::R_PAREN, PAREN_RECOVERY);
     } else {
-        expr(p);
+        required_expr(p);
     }
 }
 
@@ -589,7 +588,7 @@ fn grouping_set_member(p: &mut Parser<'_>) {
 fn having_clause(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(); // HAVING
-    expr(p);
+    required_expr(p);
     m.complete(p, SyntaxKind::HAVING_CLAUSE);
 }
 
@@ -662,7 +661,7 @@ fn order_by_clause(p: &mut Parser<'_>) {
 
 pub(super) fn order_by_item(p: &mut Parser<'_>) {
     let m = p.start();
-    expr(p);
+    required_expr(p);
     if p.eat(SyntaxKind::USING_KW) {
         super::expressions::operator_reference(p);
     } else {
@@ -681,7 +680,7 @@ fn limit_clause(p: &mut Parser<'_>) {
     if p.eat(SyntaxKind::ALL_KW) {
         // LIMIT ALL
     } else {
-        expr(p);
+        required_expr(p);
     }
 
     m.complete(p, SyntaxKind::LIMIT_CLAUSE);
@@ -690,7 +689,7 @@ fn limit_clause(p: &mut Parser<'_>) {
 fn offset_clause(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(); // OFFSET
-    expr(p);
+    required_expr(p);
     // Optional ROW/ROWS
     let _ = p.eat(SyntaxKind::ROW_KW) || p.eat(SyntaxKind::ROWS_KW);
     m.complete(p, SyntaxKind::OFFSET_CLAUSE);

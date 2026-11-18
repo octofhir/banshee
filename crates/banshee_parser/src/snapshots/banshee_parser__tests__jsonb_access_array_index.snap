@@ -9,22 +9,22 @@ SOURCE_FILE@0..57
     SELECT_ITEM_LIST@7..45
       SELECT_ITEM@7..45
         BINARY_EXPR@7..45
-          COLUMN_REF@7..23
-            IDENT@7..14 "patient"
-            DOT@14..15 "."
-            IDENT@15..23 "resource"
-          ARROW@23..25 "->"
-          BINARY_EXPR@25..45
-            LITERAL@25..31
-              STRING@25..31 "'name'"
+          BINARY_EXPR@7..34
+            BINARY_EXPR@7..31
+              COLUMN_REF@7..23
+                IDENT@7..14 "patient"
+                DOT@14..15 "."
+                IDENT@15..23 "resource"
+              ARROW@23..25 "->"
+              LITERAL@25..31
+                STRING@25..31 "'name'"
             ARROW@31..33 "->"
-            BINARY_EXPR@33..45
-              LITERAL@33..34
-                INTEGER@33..34 "0"
-              ARROW@34..36 "->"
-              LITERAL@36..45
-                STRING@36..44 "'family'"
-                WHITESPACE@44..45 " "
+            LITERAL@33..34
+              INTEGER@33..34 "0"
+          ARROW@34..36 "->"
+          LITERAL@36..45
+            STRING@36..44 "'family'"
+            WHITESPACE@44..45 " "
     FROM_CLAUSE@45..57
       FROM_KW@45..49 "FROM"
       WHITESPACE@49..50 " "

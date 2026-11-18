@@ -8,6 +8,11 @@ the latest stable Rust toolchain.
 
 ## 0.2.10 — 2026-11-18
 
+- Reject incomplete expressions in required clauses before formatting or
+  reporting a successful `format --check`.
+- Match PostgreSQL expression binding for unary signs, symbolic operators,
+  and predicates.
+- Warn about `UPDATE` and `DELETE` with literal always-true filters.
 - Support PostgreSQL numeric literals with base prefixes, digit separators,
   and trailing decimal points. Reject malformed numbers and positional
   parameters.

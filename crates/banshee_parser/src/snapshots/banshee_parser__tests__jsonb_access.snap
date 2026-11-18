@@ -9,16 +9,16 @@ SOURCE_FILE@0..40
     SELECT_ITEM_LIST@7..30
       SELECT_ITEM@7..30
         BINARY_EXPR@7..30
-          COLUMN_REF@7..11
-            IDENT@7..11 "data"
-          ARROW@11..13 "->"
-          BINARY_EXPR@13..30
+          BINARY_EXPR@7..19
+            COLUMN_REF@7..11
+              IDENT@7..11 "data"
+            ARROW@11..13 "->"
             LITERAL@13..19
               STRING@13..19 "'name'"
-            ARROW_TEXT@19..22 "->>"
-            LITERAL@22..30
-              STRING@22..29 "'first'"
-              WHITESPACE@29..30 " "
+          ARROW_TEXT@19..22 "->>"
+          LITERAL@22..30
+            STRING@22..29 "'first'"
+            WHITESPACE@29..30 " "
     FROM_CLAUSE@30..40
       FROM_KW@30..34 "FROM"
       WHITESPACE@34..35 " "

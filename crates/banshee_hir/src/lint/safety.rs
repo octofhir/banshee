@@ -1,8 +1,7 @@
-//! Safety rules (Core pack): `SF01` `UPDATE` without `WHERE`, `SF02` `DELETE`
-//! without `WHERE`.
+//! Safety rules for writes with unrestricted filters or implicit columns.
 
 use banshee_syntax::SyntaxKind;
-use banshee_syntax::ast::{AstNode, DeleteStmt, UpdateStmt};
+use banshee_syntax::ast::{AstNode, DeleteStmt, Expr, LiteralKind, UpdateStmt};
 
 use super::Rule;
 use crate::analyze::{Analyzer, BuiltinLintPack, Diagnostic, RuleCode};
@@ -94,9 +93,16 @@ fn lint_insert_without_columns(stmt: &banshee_syntax::SyntaxNode, analyzer: &mut
     );
 }
 
-/// SF01 — `UPDATE` without `WHERE` rewrites every row.
 fn lint_update_without_where(stmt: &UpdateStmt, analyzer: &mut Analyzer<'_>) {
-    if stmt.where_clause().is_none() {
+    if let Some(filter) = stmt.where_clause() {
+        if filter.expr().is_some_and(is_always_true) {
+            analyzer.emit(
+                Diagnostic::warning("UPDATE with an always-true WHERE can affect all rows")
+                    .with_code(RuleCode::Sf01)
+                    .with_range(filter.syntax().text_range()),
+            );
+        }
+    } else {
         analyzer.emit(
             Diagnostic::warning("UPDATE without WHERE affects all rows")
                 .with_code(RuleCode::Sf01)
@@ -105,13 +111,54 @@ fn lint_update_without_where(stmt: &UpdateStmt, analyzer: &mut Analyzer<'_>) {
     }
 }
 
-/// SF02 — `DELETE` without `WHERE` empties the table.
 fn lint_delete_without_where(stmt: &DeleteStmt, analyzer: &mut Analyzer<'_>) {
-    if stmt.where_clause().is_none() {
+    if let Some(filter) = stmt.where_clause() {
+        if filter.expr().is_some_and(is_always_true) {
+            analyzer.emit(
+                Diagnostic::warning("DELETE with an always-true WHERE can affect all rows")
+                    .with_code(RuleCode::Sf02)
+                    .with_range(filter.syntax().text_range()),
+            );
+        }
+    } else {
         analyzer.emit(
             Diagnostic::warning("DELETE without WHERE affects all rows")
                 .with_code(RuleCode::Sf02)
                 .with_range(stmt.syntax().text_range()),
         );
+    }
+}
+
+fn is_always_true(expr: Expr) -> bool {
+    match expr {
+        Expr::Paren(paren) => paren.expr().is_some_and(is_always_true),
+        Expr::Literal(literal) => literal.kind() == Some(LiteralKind::Boolean(true)),
+        Expr::Binary(binary)
+            if binary
+                .syntax()
+                .children_with_tokens()
+                .filter_map(|element| element.into_token())
+                .find(|token| !token.kind().is_trivia())
+                .is_some_and(|token| token.kind() == SyntaxKind::EQ) =>
+        {
+            let (Some(left), Some(right)) = (
+                binary.lhs().and_then(decimal_int4),
+                binary.rhs().and_then(decimal_int4),
+            ) else {
+                return false;
+            };
+            left == right
+        }
+        _ => false,
+    }
+}
+
+fn decimal_int4(expr: Expr) -> Option<i32> {
+    match expr {
+        Expr::Paren(paren) => decimal_int4(paren.expr()?),
+        Expr::Literal(literal) if literal.kind() == Some(LiteralKind::Integer) => {
+            literal.token()?.text().parse().ok()
+        }
+        _ => None,
     }
 }

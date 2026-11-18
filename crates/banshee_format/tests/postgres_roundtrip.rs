@@ -131,6 +131,27 @@ fn postgres_literals_and_user_defined_operators_round_trip() {
     }
 }
 
+#[test]
+fn postgres_operator_and_predicate_precedence_round_trips() {
+    for (expression, explicit) in [
+        ("-2 ^ 2", "(-2) ^ 2"),
+        ("data->'obj'->>'key'", "(data->'obj')->>'key'"),
+        ("a+b between 1 and 2", "(a+b) between 1 and 2"),
+        ("a+b is null", "(a+b) is null"),
+        ("a+b not in (1,2)", "(a+b) not in (1,2)"),
+        ("a||b+c", "a||(b+c)"),
+        ("a at time zone b||c", "(a at time zone b)||c"),
+        ("data@?'$.name'::jsonpath", "data@?('$.name'::jsonpath)"),
+    ] {
+        let sql = format!("select {expression} from t;");
+        let original = postgres_tree(&format!("select {explicit} from t;"));
+        assert_eq!(postgres_tree(&sql), original, "{sql}");
+        for &(style, format) in STYLES {
+            assert_round_trip_with(&sql, &original, style, format);
+        }
+    }
+}
+
 fn assert_round_trip_with(
     sql: &str,
     original: &Value,

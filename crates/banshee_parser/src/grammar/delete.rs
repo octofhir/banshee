@@ -4,7 +4,7 @@ use crate::parser::Parser;
 use banshee_syntax::SyntaxKind;
 
 use super::CLAUSE_RECOVERY;
-use super::expressions::expr;
+use super::expressions::required_expr;
 use super::insert::returning_clause;
 use super::select::{at_ident, expect_ident, with_clause};
 
@@ -113,7 +113,7 @@ fn where_clause(p: &mut Parser<'_>) {
         p.expect(SyntaxKind::OF_KW);
         expect_ident(p, CLAUSE_RECOVERY);
     } else {
-        expr(p);
+        required_expr(p);
     }
 
     m.complete(p, SyntaxKind::WHERE_CLAUSE);

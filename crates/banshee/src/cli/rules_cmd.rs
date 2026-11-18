@@ -220,24 +220,25 @@ remove it or use it.",
     RuleDoc {
         code: "SF01",
         fixable: false,
-        summary: "UPDATE without WHERE affects all rows",
+        summary: "UPDATE can affect all rows",
         explanation: "\
-An UPDATE with no WHERE clause rewrites every row in the table. This is
-occasionally intended but far more often a mistake; add a WHERE clause to scope
-the change.
+An UPDATE can affect all rows if its WHERE clause is absent or always true.
+Use a predicate that scopes the change to the intended rows.
 
   risky: UPDATE patient SET active = false;
+  risky: UPDATE patient SET active = false WHERE 1 = 1;
   safe:  UPDATE patient SET active = false WHERE id = 42;",
     },
     RuleDoc {
         code: "SF02",
         fixable: false,
-        summary: "DELETE without WHERE affects all rows",
+        summary: "DELETE can affect all rows",
         explanation: "\
-A DELETE with no WHERE clause empties the table. Add a WHERE clause unless you
-truly intend to remove every row (in which case TRUNCATE is usually clearer).
+A DELETE can affect all rows if its WHERE clause is absent or always true.
+Use a predicate that scopes the change to the intended rows.
 
   risky: DELETE FROM sessions;
+  risky: DELETE FROM sessions WHERE TRUE;
   safe:  DELETE FROM sessions WHERE expires_at < now();",
     },
     RuleDoc {

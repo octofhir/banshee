@@ -4,7 +4,7 @@ use crate::parser::Parser;
 use banshee_syntax::SyntaxKind;
 
 use super::PAREN_RECOVERY;
-use super::expressions::expr;
+use super::expressions::required_expr;
 use super::select::{at_ident, at_ident_text, expect_ident, select_stmt, with_clause};
 
 /// Parse INSERT statement.
@@ -132,11 +132,9 @@ fn values_row(p: &mut Parser<'_>) {
     let m = p.start();
     p.expect_recover(SyntaxKind::L_PAREN, PAREN_RECOVERY);
 
-    if !p.at(SyntaxKind::R_PAREN) {
+    value_expr(p);
+    while p.eat(SyntaxKind::COMMA) {
         value_expr(p);
-        while p.eat(SyntaxKind::COMMA) {
-            value_expr(p);
-        }
     }
 
     p.expect_recover(SyntaxKind::R_PAREN, PAREN_RECOVERY);
@@ -147,7 +145,7 @@ fn value_expr(p: &mut Parser<'_>) {
     if p.eat(SyntaxKind::DEFAULT_KW) {
         // DEFAULT value
     } else {
-        expr(p);
+        required_expr(p);
     }
 }
 
@@ -183,9 +181,9 @@ fn conflict_target(p: &mut Parser<'_>) {
     p.bump(); // (
 
     // Column names or expressions
-    expr(p);
+    required_expr(p);
     while p.eat(SyntaxKind::COMMA) {
-        expr(p);
+        required_expr(p);
     }
 
     p.expect_recover(SyntaxKind::R_PAREN, PAREN_RECOVERY);
@@ -193,7 +191,7 @@ fn conflict_target(p: &mut Parser<'_>) {
     // Optional WHERE clause for partial index
     if p.at(SyntaxKind::WHERE_KW) {
         p.bump();
-        expr(p);
+        required_expr(p);
     }
 
     m.complete(p, SyntaxKind::CONFLICT_TARGET);
@@ -211,7 +209,7 @@ fn do_update(p: &mut Parser<'_>) {
     // Optional WHERE clause
     if p.at(SyntaxKind::WHERE_KW) {
         p.bump();
-        expr(p);
+        required_expr(p);
     }
 
     m.complete(p, SyntaxKind::DO_UPDATE);
@@ -243,7 +241,7 @@ fn set_item(p: &mut Parser<'_>) {
         select_stmt(p);
         p.expect_recover(SyntaxKind::R_PAREN, PAREN_RECOVERY);
     } else {
-        expr(p);
+        required_expr(p);
     }
 
     m.complete(p, SyntaxKind::SET_ITEM);
@@ -253,7 +251,7 @@ pub fn returning_clause(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(); // RETURNING
 
-    expr(p);
+    required_expr(p);
     // Optional alias
     if p.eat(SyntaxKind::AS_KW) {
         expect_ident(p, PAREN_RECOVERY);
@@ -262,7 +260,7 @@ pub fn returning_clause(p: &mut Parser<'_>) {
     }
 
     while p.eat(SyntaxKind::COMMA) {
-        expr(p);
+        required_expr(p);
         if p.eat(SyntaxKind::AS_KW) {
             expect_ident(p, PAREN_RECOVERY);
         } else if at_ident(p) && !is_clause_end(p.current()) {

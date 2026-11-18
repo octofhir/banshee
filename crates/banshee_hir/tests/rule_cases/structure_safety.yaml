@@ -37,6 +37,18 @@
   rule: SF01
   pass: "UPDATE users SET name = 'x' WHERE id = 1"
 
+- name: update_with_equal_integers_flagged
+  rule: SF01
+  fail: "UPDATE users SET name = 'x' WHERE ((01) = (1))"
+
+- name: update_with_unequal_integers_ok
+  rule: SF01
+  pass: "UPDATE users SET name = 'x' WHERE 1 = 2"
+
+- name: update_with_qualified_operator_ok
+  rule: SF01
+  pass: "UPDATE users SET name = 'x' WHERE 1 OPERATOR(custom.=) 1"
+
 - name: delete_without_where_flagged
   rule: SF02
   fail: "DELETE FROM users"
@@ -44,3 +56,15 @@
 - name: delete_with_where_ok
   rule: SF02
   pass: "DELETE FROM users WHERE id = 1"
+
+- name: delete_with_true_where_flagged
+  rule: SF02
+  fail: "DELETE FROM users WHERE (TRUE)"
+
+- name: delete_with_false_where_ok
+  rule: SF02
+  pass: "DELETE FROM users WHERE FALSE"
+
+- name: delete_with_nullable_reference_ok
+  rule: SF02
+  pass: "DELETE FROM users WHERE id = id"

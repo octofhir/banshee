@@ -311,6 +311,82 @@ fn oracle_rejects_missing_select_items_and_statement_separators() {
 }
 
 #[test]
+fn oracle_agrees_on_required_clause_expressions() {
+    for sql in [
+        "SELECT * FROM t WHERE;",
+        "SELECT 1 ORDER BY;",
+        "SELECT 1 LIMIT;",
+        "SELECT 1 OFFSET;",
+        "SELECT 1 GROUP BY;",
+        "SELECT 1 HAVING;",
+        "SELECT * FROM t JOIN u ON;",
+        "SELECT DISTINCT ON () id FROM t;",
+        "SELECT x IN ();",
+        "SELECT x NOT IN ();",
+        "SELECT x = ANY();",
+        "SELECT CASE WHEN THEN 1 END;",
+        "UPDATE t SET a =;",
+        "DELETE FROM t WHERE;",
+        "INSERT INTO t VALUES ();",
+        "VALUES (1,);",
+    ] {
+        assert!(!pg_accepts(sql), "PostgreSQL accepted {sql}");
+        assert!(
+            !banshee_parser::parse(sql).errors().is_empty(),
+            "Banshee accepted {sql}"
+        );
+    }
+
+    for sql in [
+        "SELECT FROM t WHERE x IN (1) ORDER BY x LIMIT ALL;",
+        "SELECT 1 GROUP BY ();",
+        "INSERT INTO t DEFAULT VALUES;",
+        "UPDATE t SET a = DEFAULT WHERE CURRENT OF c;",
+        "DELETE FROM t WHERE CURRENT OF c;",
+    ] {
+        assert!(pg_accepts(sql), "PostgreSQL rejected {sql}");
+        let parsed = banshee_parser::parse(sql);
+        assert!(parsed.errors().is_empty(), "{sql}: {:?}", parsed.errors());
+    }
+}
+
+#[test]
+fn expressions_bind_with_postgres_precedence() {
+    use banshee_syntax::SyntaxKind::{
+        AT_TIME_ZONE_EXPR, BETWEEN_EXPR, BINARY_EXPR, COLUMN_REF, IN_EXPR, IS_EXPR, SELECT_ITEM,
+        UNARY_EXPR,
+    };
+
+    for (expression, outer, left) in [
+        ("-2 ^ 2", BINARY_EXPR, UNARY_EXPR),
+        ("data -> 'obj' ->> 'key'", BINARY_EXPR, BINARY_EXPR),
+        ("a + b BETWEEN 1 AND 2", BETWEEN_EXPR, BINARY_EXPR),
+        ("a + b IS NULL", IS_EXPR, BINARY_EXPR),
+        ("a + b NOT IN (1, 2)", IN_EXPR, BINARY_EXPR),
+        ("a || b + c", BINARY_EXPR, COLUMN_REF),
+        ("a AT TIME ZONE b || c", BINARY_EXPR, AT_TIME_ZONE_EXPR),
+        ("data @? '$.name'::jsonpath", BINARY_EXPR, COLUMN_REF),
+    ] {
+        let sql = format!("SELECT {expression}");
+        assert!(pg_accepts(&sql), "{sql}");
+        let parsed = banshee_parser::parse(&sql);
+        assert!(parsed.errors().is_empty(), "{sql}: {:?}", parsed.errors());
+        let root = parsed.syntax();
+        let expr = root
+            .descendants()
+            .find(|node| node.kind() == SELECT_ITEM)
+            .and_then(|item| item.children().next())
+            .expect("SELECT expression");
+        assert_eq!(expr.kind(), outer, "{sql}");
+        assert_eq!(
+            expr.children().next().map(|node| node.kind()),
+            Some(left),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
 fn oracle_accepts_sql_routine_bodies_as_part_of_one_statement() {
     use banshee_syntax::SyntaxKind;
 

@@ -8,10 +8,19 @@ pub fn expr(p: &mut Parser<'_>) -> Option<CompletedMarker> {
     expr_bp(p, 0)
 }
 
-fn expr_bp(p: &mut Parser<'_>, min_bp: u8) -> Option<CompletedMarker> {
-    let mut lhs = lhs(p)?;
+/// Parses an expression in a position where the grammar requires one.
+pub(super) fn required_expr(p: &mut Parser<'_>) {
+    require_expr_bp(p, 0);
+}
 
+fn expr_bp(p: &mut Parser<'_>, min_bp: u8) -> Option<CompletedMarker> {
+    let first = lhs(p)?;
+    Some(expr_tail(p, first, min_bp))
+}
+
+fn expr_tail(p: &mut Parser<'_>, mut lhs: CompletedMarker, min_bp: u8) -> CompletedMarker {
     loop {
+        lhs = postfix(p, lhs, min_bp);
         let op = p.current();
         if op == SyntaxKind::OPERATOR_KW && p.nth(1) != SyntaxKind::L_PAREN {
             break;
@@ -51,8 +60,9 @@ fn expr_bp(p: &mut Parser<'_>, min_bp: u8) -> Option<CompletedMarker> {
         // For JSONPath operators, if the RHS is a string literal, mark it specially
         let has_rhs = if is_jsonpath_op && p.at(SyntaxKind::STRING) {
             let jm = p.start();
-            p.bump(); // consume the string
-            jm.complete(p, SyntaxKind::JSONPATH_LITERAL);
+            p.bump();
+            let path = jm.complete(p, SyntaxKind::JSONPATH_LITERAL);
+            expr_tail(p, path, r_bp);
             true
         } else if is_comparison
             && (p.at(SyntaxKind::ANY_KW) || p.at(SyntaxKind::ALL_KW) || p.at(SyntaxKind::SOME_KW))
@@ -68,7 +78,7 @@ fn expr_bp(p: &mut Parser<'_>, min_bp: u8) -> Option<CompletedMarker> {
                 parse_subquery_with_recovery(p);
                 p.pop_context();
             } else {
-                expr(p);
+                required_expr(p);
             }
             p.expect_recover(SyntaxKind::R_PAREN, PAREN_RECOVERY);
 
@@ -91,7 +101,7 @@ fn expr_bp(p: &mut Parser<'_>, min_bp: u8) -> Option<CompletedMarker> {
         }
     }
 
-    Some(lhs)
+    lhs
 }
 
 fn lhs(p: &mut Parser<'_>) -> Option<CompletedMarker> {
@@ -223,7 +233,7 @@ fn lhs(p: &mut Parser<'_>) -> Option<CompletedMarker> {
         _ => return None,
     };
 
-    Some(postfix(p, cm))
+    Some(cm)
 }
 
 /// Whether a typed literal starts here: a type name directly followed by a
@@ -299,8 +309,27 @@ fn typed_literal(p: &mut Parser<'_>) -> CompletedMarker {
     m.complete(p, SyntaxKind::CAST_EXPR)
 }
 
-fn postfix(p: &mut Parser<'_>, mut lhs: CompletedMarker) -> CompletedMarker {
+fn postfix(p: &mut Parser<'_>, mut lhs: CompletedMarker, min_bp: u8) -> CompletedMarker {
     loop {
+        let kind = if p.at(SyntaxKind::NOT_KW) {
+            p.nth(1)
+        } else {
+            p.current()
+        };
+        let bp = match kind {
+            SyntaxKind::IS_KW | SyntaxKind::ISNULL_KW | SyntaxKind::NOTNULL_KW => IS_BP,
+            SyntaxKind::BETWEEN_KW
+            | SyntaxKind::IN_KW
+            | SyntaxKind::LIKE_KW
+            | SyntaxKind::ILIKE_KW
+            | SyntaxKind::SIMILAR_KW => PREDICATE_BP,
+            SyntaxKind::AT_KW => AT_BP,
+            SyntaxKind::COLLATE_KW => COLLATE_BP,
+            _ => u8::MAX,
+        };
+        if bp < min_bp {
+            return lhs;
+        }
         lhs = match p.current() {
             // Type cast: expr::type
             SyntaxKind::DOUBLE_COLON => {
@@ -361,7 +390,7 @@ fn postfix(p: &mut Parser<'_>, mut lhs: CompletedMarker) -> CompletedMarker {
                     SyntaxKind::DISTINCT_KW => {
                         p.bump();
                         p.expect(SyntaxKind::FROM_KW);
-                        expr(p);
+                        require_expr_bp(p, IS_BP + 1);
                     }
                     _ => p.error("expected NULL, TRUE, FALSE, UNKNOWN, or DISTINCT after IS"),
                 }
@@ -380,9 +409,9 @@ fn postfix(p: &mut Parser<'_>, mut lhs: CompletedMarker) -> CompletedMarker {
                     p.pop_context();
                 } else {
                     // expression list
-                    expr(p);
+                    required_expr(p);
                     while p.eat(SyntaxKind::COMMA) {
-                        expr(p);
+                        required_expr(p);
                     }
                 }
                 p.expect_recover(SyntaxKind::R_PAREN, PAREN_RECOVERY);
@@ -401,9 +430,9 @@ fn postfix(p: &mut Parser<'_>, mut lhs: CompletedMarker) -> CompletedMarker {
                     parse_subquery_with_recovery(p);
                     p.pop_context();
                 } else {
-                    expr(p);
+                    required_expr(p);
                     while p.eat(SyntaxKind::COMMA) {
-                        expr(p);
+                        required_expr(p);
                     }
                 }
                 p.expect_recover(SyntaxKind::R_PAREN, PAREN_RECOVERY);
@@ -414,9 +443,9 @@ fn postfix(p: &mut Parser<'_>, mut lhs: CompletedMarker) -> CompletedMarker {
             SyntaxKind::BETWEEN_KW => {
                 let m = lhs.precede(p);
                 p.bump();
-                expr_bp(p, BETWEEN_BP);
+                require_expr_bp(p, PREDICATE_BP + 1);
                 p.expect(SyntaxKind::AND_KW);
-                expr_bp(p, BETWEEN_BP);
+                require_expr_bp(p, PREDICATE_BP + 1);
                 m.complete(p, SyntaxKind::BETWEEN_EXPR)
             }
 
@@ -425,9 +454,9 @@ fn postfix(p: &mut Parser<'_>, mut lhs: CompletedMarker) -> CompletedMarker {
                 let m = lhs.precede(p);
                 p.bump(); // NOT
                 p.bump(); // BETWEEN
-                expr_bp(p, BETWEEN_BP);
+                require_expr_bp(p, PREDICATE_BP + 1);
                 p.expect(SyntaxKind::AND_KW);
-                expr_bp(p, BETWEEN_BP);
+                require_expr_bp(p, PREDICATE_BP + 1);
                 m.complete(p, SyntaxKind::BETWEEN_EXPR)
             }
 
@@ -435,9 +464,9 @@ fn postfix(p: &mut Parser<'_>, mut lhs: CompletedMarker) -> CompletedMarker {
             SyntaxKind::LIKE_KW | SyntaxKind::ILIKE_KW => {
                 let m = lhs.precede(p);
                 p.bump();
-                expr_bp(p, LIKE_BP);
+                require_expr_bp(p, PREDICATE_BP + 1);
                 if p.eat(SyntaxKind::ESCAPE_KW) {
-                    expr_bp(p, LIKE_BP);
+                    require_expr_bp(p, PREDICATE_BP + 1);
                 }
                 m.complete(p, SyntaxKind::LIKE_EXPR)
             }
@@ -449,9 +478,9 @@ fn postfix(p: &mut Parser<'_>, mut lhs: CompletedMarker) -> CompletedMarker {
                 let m = lhs.precede(p);
                 p.bump(); // NOT
                 p.bump(); // LIKE/ILIKE
-                expr_bp(p, LIKE_BP);
+                require_expr_bp(p, PREDICATE_BP + 1);
                 if p.eat(SyntaxKind::ESCAPE_KW) {
-                    expr_bp(p, LIKE_BP);
+                    require_expr_bp(p, PREDICATE_BP + 1);
                 }
                 m.complete(p, SyntaxKind::LIKE_EXPR)
             }
@@ -461,9 +490,9 @@ fn postfix(p: &mut Parser<'_>, mut lhs: CompletedMarker) -> CompletedMarker {
                 let m = lhs.precede(p);
                 p.bump(); // SIMILAR
                 p.bump(); // TO
-                expr_bp(p, LIKE_BP);
+                require_expr_bp(p, PREDICATE_BP + 1);
                 if p.eat(SyntaxKind::ESCAPE_KW) {
-                    expr_bp(p, LIKE_BP);
+                    require_expr_bp(p, PREDICATE_BP + 1);
                 }
                 m.complete(p, SyntaxKind::LIKE_EXPR)
             }
@@ -474,9 +503,9 @@ fn postfix(p: &mut Parser<'_>, mut lhs: CompletedMarker) -> CompletedMarker {
                 p.bump(); // NOT
                 p.bump(); // SIMILAR
                 p.bump(); // TO
-                expr_bp(p, LIKE_BP);
+                require_expr_bp(p, PREDICATE_BP + 1);
                 if p.eat(SyntaxKind::ESCAPE_KW) {
-                    expr_bp(p, LIKE_BP);
+                    require_expr_bp(p, PREDICATE_BP + 1);
                 }
                 m.complete(p, SyntaxKind::LIKE_EXPR)
             }
@@ -489,7 +518,7 @@ fn postfix(p: &mut Parser<'_>, mut lhs: CompletedMarker) -> CompletedMarker {
                 p.bump(); // AT
                 p.bump(); // TIME
                 p.bump(); // ZONE
-                expr_bp(p, BETWEEN_BP);
+                require_expr_bp(p, AT_BP + 1);
                 m.complete(p, SyntaxKind::AT_TIME_ZONE_EXPR)
             }
 
@@ -848,18 +877,16 @@ fn case_expr(p: &mut Parser<'_>) -> CompletedMarker {
     while p.at(SyntaxKind::WHEN_KW) {
         let wm = p.start();
         p.bump(); // WHEN
-        expr(p);
+        required_expr(p);
         p.expect_recover(SyntaxKind::THEN_KW, CASE_RECOVERY);
-        if !p.at_set(CASE_RECOVERY) || p.at(SyntaxKind::WHEN_KW) || p.at(SyntaxKind::ELSE_KW) {
-            expr(p);
-        }
+        required_expr(p);
         wm.complete(p, SyntaxKind::CASE_WHEN);
     }
 
     // Parse optional ELSE clause
     if p.eat(SyntaxKind::ELSE_KW) {
         let em = p.start();
-        expr(p);
+        required_expr(p);
         em.complete(p, SyntaxKind::CASE_ELSE);
     }
 
@@ -1163,72 +1190,35 @@ pub(super) fn type_name(p: &mut Parser<'_>, context: &str) {
     m.complete(p, SyntaxKind::TYPE_NAME);
 }
 
-// Binding power constants
-const PREFIX_BP: u8 = 15;
-const GENERIC_OP_BP: u8 = 7;
-const BETWEEN_BP: u8 = 7;
-const LIKE_BP: u8 = 7;
-/// Operand binding power for prefix `NOT`: above AND (4) so it captures a full
-/// comparison, below comparison (6) so `NOT a = b` is `NOT (a = b)`.
-const NOT_BP: u8 = 5;
+// PostgreSQL precedence, from logical disjunction to unary signs.
+const NOT_BP: u8 = 6;
+const IS_BP: u8 = 8;
+const COMPARISON_BP: u8 = 10;
+const PREDICATE_BP: u8 = 12;
+const GENERIC_OP_BP: u8 = 14;
+const AT_BP: u8 = 22;
+const COLLATE_BP: u8 = 24;
+const PREFIX_BP: u8 = 26;
+
+fn require_expr_bp(p: &mut Parser<'_>, minimum: u8) {
+    if expr_bp(p, minimum).is_none() {
+        p.error("expected expression");
+    }
+}
 
 fn infix_binding_power(op: SyntaxKind) -> Option<(u8, u8)> {
-    let bp = match op {
-        // Cast (highest, left-associative handled via postfix)
-        // SyntaxKind::DOUBLE_COLON => (14, 15), // Handled in postfix
-
-        // Exponentiation: binds tighter than unary +/- (PREFIX_BP), left-associative.
-        // PostgreSQL: `-2 ^ 2` evaluates as `-(2 ^ 2)`.
-        SyntaxKind::CARET => (21, 22),
-
-        // JSONB access operators (right-associative for chaining)
-        SyntaxKind::ARROW | SyntaxKind::ARROW_TEXT => (12, 11),
-        SyntaxKind::HASH_ARROW | SyntaxKind::HASH_ARROW_TEXT => (12, 11),
-
-        // Multiplicative
-        SyntaxKind::STAR | SyntaxKind::SLASH | SyntaxKind::PERCENT => (10, 11),
-
-        // String concatenation
-        SyntaxKind::PIPE_PIPE => (10, 11),
-
-        // Additive
-        SyntaxKind::PLUS | SyntaxKind::MINUS => (8, 9),
-
-        SyntaxKind::GENERIC_OP | SyntaxKind::OPERATOR_KW => (GENERIC_OP_BP, GENERIC_OP_BP + 1),
-        // Bitwise and shift operators (below additive, above comparison).
-        SyntaxKind::AMP
-        | SyntaxKind::PIPE
-        | SyntaxKind::HASH
-        | SyntaxKind::SHL
-        | SyntaxKind::SHR => (7, 8),
-
-        // JSONB containment and existence
-        SyntaxKind::AT_GT | SyntaxKind::LT_AT => (6, 7),
-        SyntaxKind::QUESTION | SyntaxKind::QUESTION_PIPE | SyntaxKind::QUESTION_AMP => (6, 7),
-        SyntaxKind::HASH_MINUS => (6, 7),
-        SyntaxKind::AT_QUESTION | SyntaxKind::AT_AT => (6, 7),
-
-        // Comparison
-        SyntaxKind::EQ
-        | SyntaxKind::NE
-        | SyntaxKind::LT
-        | SyntaxKind::LE
-        | SyntaxKind::GT
-        | SyntaxKind::GE => (6, 7),
-
-        // Pattern-match operators (regex). Same level as comparison.
-        SyntaxKind::TILDE
-        | SyntaxKind::TILDE_STAR
-        | SyntaxKind::BANG_TILDE
-        | SyntaxKind::BANG_TILDE_STAR => (6, 7),
-
-        // Logical AND
-        SyntaxKind::AND_KW => (4, 5),
-
-        // Logical OR
-        SyntaxKind::OR_KW => (2, 3),
-
+    use SyntaxKind::*;
+    let left = match op {
+        CARET => 20,
+        STAR | SLASH | PERCENT => 18,
+        PLUS | MINUS => 16,
+        AMP | PIPE | HASH | SHL | SHR | PIPE_PIPE | GENERIC_OP | OPERATOR_KW | TILDE
+        | TILDE_STAR | BANG_TILDE | BANG_TILDE_STAR => GENERIC_OP_BP,
+        EQ | NE | LT | LE | GT | GE => COMPARISON_BP,
+        AND_KW => 4,
+        OR_KW => 2,
+        _ if op.is_jsonb_operator() => GENERIC_OP_BP,
         _ => return None,
     };
-    Some(bp)
+    Some((left, left + 1))
 }

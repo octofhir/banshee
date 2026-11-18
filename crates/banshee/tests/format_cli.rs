@@ -31,7 +31,7 @@ fn format_stdin(command: &mut Command, sql: &str) -> Output {
 }
 
 #[test]
-fn all_presets_reject_missing_select_items_and_statement_separators() {
+fn all_presets_reject_invalid_postgres_syntax() {
     let dir = tempfile::tempdir().expect("create temporary directory");
     for style in ["sqlstyle", "pgformatter", "compact"] {
         std::fs::write(
@@ -39,11 +39,13 @@ fn all_presets_reject_missing_select_items_and_statement_separators() {
             format!("[format]\nstyle = \"{style}\"\n"),
         )
         .expect("write preset");
-        let format = |sql: &str| {
+        let format = |args: &[&str], sql: &str| {
             format_stdin(
                 Command::new(env!("CARGO_BIN_EXE_banshee"))
                     .current_dir(dir.path())
-                    .args(["format", "-"]),
+                    .arg("format")
+                    .args(args)
+                    .arg("-"),
                 sql,
             )
         };
@@ -55,12 +57,22 @@ fn all_presets_reject_missing_select_items_and_statement_separators() {
             "SELECT 1e+;",
             "SELECT 123abc;",
             "SELECT 0b102;",
+            "SELECT * FROM t WHERE;",
+            "SELECT 1 ORDER BY;",
+            "SELECT 1 LIMIT;",
+            "SELECT DISTINCT ON () id FROM t;",
+            "SELECT x IN ();",
+            "SELECT CASE WHEN THEN 1 END;",
+            "UPDATE t SET a =;",
+            "INSERT INTO t VALUES ();",
         ] {
-            let result = format(source);
-            assert_eq!(result.status.code(), Some(2), "{style}: {source}");
-            assert!(result.stdout.is_empty());
+            for args in [&[][..], &["--check"][..]] {
+                let result = format(args, source);
+                assert_eq!(result.status.code(), Some(2), "{style} {args:?}: {source}");
+                assert!(result.stdout.is_empty());
+            }
         }
-        assert!(format("SELECT FROM t;").status.success());
+        assert!(format(&[], "SELECT FROM t;").status.success());
     }
 }
 
