@@ -148,6 +148,14 @@ impl Printer {
         }
     }
 
+    /// Indents the start of a token and copies its contents byte for byte.
+    pub(crate) fn write_verbatim(&mut self, text: &str) {
+        if self.at_line_start {
+            self.write_indent();
+        }
+        self.write_raw(text);
+    }
+
     /// Writes a newline.
     pub fn newline(&mut self) {
         self.buffer.push('\n');
@@ -193,7 +201,7 @@ impl Printer {
     /// Writes an identifier, transforming case according to config.
     pub fn write_identifier(&mut self, ident: &str) {
         let transformed = match self.config.identifier_case {
-            crate::config::IdentifierCase::Lower => ident.to_lowercase(),
+            crate::config::IdentifierCase::Lower => ident.to_ascii_lowercase(),
             crate::config::IdentifierCase::Preserve => ident.to_string(),
         };
         self.write(&transformed);

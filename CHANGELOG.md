@@ -4,7 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project tracks
 the latest stable Rust toolchain.
 
+## 0.2.9 — 2026-11-18
+
+- Guard formatter output for all three presets. Preserve SQL tokens, comments,
+  statement separators and the contents of literals. Use conservative layout
+  when a preset's printer cannot preserve the input.
+- Report formatting errors before the CLI emits output or rewrites any file.
+  Library callers can use `try_format` to handle these errors.
+- Compare original and formatted SQL against PostgreSQL in regression tests.
+
 ## 0.2.8 — 2026-11-04
+
+- Known issue: formatting in this release can change query meaning or produce
+  invalid PostgreSQL while reporting success. See [issue #1](https://github.com/octofhir/banshee/issues/1).
 
 - Resolve column references of an enclosing query inside a correlated subquery
   (`EXISTS (SELECT 1 FROM t WHERE t.code = outer.code)`): the HIR scope of a

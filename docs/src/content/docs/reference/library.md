@@ -26,6 +26,10 @@ let formatted = banshee_format::format_sqlstyle("select id,name from users");
 println!("{formatted}");
 ```
 
+Use `banshee_format::try_format` or `banshee_format::pg_format::try_format`
+to handle formatting errors. The helpers that return `String` return the
+original SQL when formatting fails.
+
 ## Embedding the engine
 
 banshee is built to be driven by other tools without a fork. `banshee_hir`

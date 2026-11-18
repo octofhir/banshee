@@ -25,9 +25,10 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     A lossless, error-recovering CST means editors get diagnostics on half-typed
     statements, not a hard parse failure.
   </Card>
-  <Card title="Correct by construction" icon="puzzle">
-    Every statement is cross-checked against PostgreSQL's own parser
-    (`libpg_query`) in a differential test.
+  <Card title="PostgreSQL regression tests" icon="puzzle">
+    Parser tests compare acceptance on a SQL corpus. Formatter tests compare
+    PostgreSQL parse trees before and after formatting a regression corpus
+    with all three presets.
   </Card>
   <Card title="Postgres-native" icon="document">
     JSONB / JSONPath plus a squawk-class migration-safety pack (MG01–MG16) that

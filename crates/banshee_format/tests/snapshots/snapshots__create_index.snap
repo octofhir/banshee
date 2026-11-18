@@ -3,4 +3,4 @@ source: crates/banshee_format/tests/snapshots.rs
 expression: formatted
 ---
 CREATE UNIQUE INDEX CONCURRENTLY idx_users_email ON public.users USING btree(email)
-WHERE active
+WHERE active;

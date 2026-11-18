@@ -26,23 +26,13 @@ layer; the grammar, JSONB/JSONPath support, and lint rules target Postgres.
   formatter *or* a linter you wire together.
 - **Keeps working on broken SQL.** A lossless, error-recovering CST means
   editors get diagnostics on half-typed statements, not a hard parse failure.
-- **Correct by construction.** Every statement is cross-checked against
-  PostgreSQL's own parser (`libpg_query`) in a differential test.
+- **PostgreSQL regression tests.** Parser tests compare acceptance on a SQL
+  corpus. Formatter tests compare PostgreSQL parse trees before and after
+  formatting a regression corpus with all three presets.
 - **Postgres-native.** JSONB/JSONPath, plus a squawk-class migration-safety
   pack (MG01–MG30) that generic SQL tools don't have, with a
   `lint --breaking` gate for backward-incompatible changes.
-- **Fast.** Compiled Rust, no Python or Perl runtime to spin up per file:
-
-  | formatter (400-stmt, 60 KB Postgres file) | median | vs banshee |
-  |-------------------------------------------|--------|------------|
-  | **banshee**                               | ~11 ms | 1×         |
-  | sqlfluff 4.2 (`format --dialect postgres`)| ~257 ms| ~24× slower |
-  | pgFormatter 5.10 (`pg_format`)            | ~1170 ms| ~105× slower |
-
-  Linting shows the same gap (~9 ms vs sqlfluff's ~250 ms). Measured on Apple
-  Silicon, median of 20 runs including process startup; reproduce with
-  [`scripts/bench.sh`](scripts/bench.sh). Numbers vary by machine and corpus,
-  but the order of magnitude is the point.
+- **Native binary.** The CLI runs without a Python or Perl runtime.
 
 ## Install
 
@@ -88,6 +78,10 @@ banshee lsp                   # language server over stdio
 Inputs are files, directories (walked for `*.sql`), or stdin (`-`). Exit codes:
 `0` clean, `1` findings / unformatted, `2` error.
 
+`format` checks that output preserves SQL tokens and significant whitespace.
+If it cannot safely format an input, it reports the file and exits with code
+`2` before writing any formatted SQL.
+
 ```sh
 echo "select id,name from users where active=true" | banshee format -
 #  SELECT id, name
@@ -117,7 +111,7 @@ Use the library without the command-line, formatter, completion or language-serv
 
 ```toml
 [dependencies]
-banshee = { version = "0.2.8", default-features = false }
+banshee = { version = "0.2.9", default-features = false }
 ```
 
 ```rust

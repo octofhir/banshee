@@ -3,7 +3,7 @@ source: crates/banshee_format/tests/snapshots.rs
 expression: formatted
 ---
 SELECT *
-  FROM users
+  FROM users;
 
 SELECT *
-  FROM orders
+  FROM orders;

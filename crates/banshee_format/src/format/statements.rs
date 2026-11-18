@@ -800,13 +800,12 @@ fn format_returning(node: &SyntaxNode, printer: &mut Printer) {
     }
     printer.space();
 
-    let items = children_of_kind(node, SyntaxKind::SELECT_ITEM);
-    for (i, item) in items.iter().enumerate() {
+    for (i, item) in node.children().enumerate() {
         if i > 0 {
             printer.write(",");
             printer.space();
         }
-        format_select_item(item, printer);
+        format_expression(item, printer);
     }
 }
 

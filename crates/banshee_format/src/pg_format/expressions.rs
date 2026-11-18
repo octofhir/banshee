@@ -35,9 +35,10 @@ pub(crate) fn format_expression(node: &SyntaxNode, printer: &mut PgPrinter) {
         SyntaxKind::COALESCE_EXPR => format_coalesce(node, printer),
         SyntaxKind::NULLIF_EXPR => format_nullif(node, printer),
         SyntaxKind::GREATEST_EXPR | SyntaxKind::LEAST_EXPR => format_greatest_least(node, printer),
-        SyntaxKind::COLUMN_REF | SyntaxKind::QUALIFIED_NAME => format_column_ref(node, printer),
+        SyntaxKind::COLUMN_REF | SyntaxKind::QUALIFIED_NAME | SyntaxKind::STAR_EXPR => {
+            format_column_ref(node, printer)
+        }
         SyntaxKind::LITERAL => format_literal(node, printer),
-        SyntaxKind::STAR_EXPR => printer.write("*"),
         SyntaxKind::OVER_CLAUSE => format_over_clause(node, printer),
         _ => format_children(node, printer),
     }
@@ -472,11 +473,15 @@ pub(crate) fn format_subquery(node: &SyntaxNode, printer: &mut PgPrinter) {
     printer.newline();
     printer.indent();
 
-    for child in node.children() {
-        if child.kind() == SyntaxKind::SELECT_STMT {
-            format_select(child, printer);
-        } else {
-            format_expression(child, printer);
+    if node.kind() == SyntaxKind::SELECT_STMT {
+        format_select(node, printer);
+    } else {
+        for child in node.children() {
+            if child.kind() == SyntaxKind::SELECT_STMT {
+                format_select(child, printer);
+            } else {
+                format_expression(child, printer);
+            }
         }
     }
 
@@ -488,6 +493,11 @@ pub(crate) fn format_subquery(node: &SyntaxNode, printer: &mut PgPrinter) {
 /// Formats an array expression.
 pub(crate) fn format_array_expr(node: &SyntaxNode, printer: &mut PgPrinter) {
     printer.write_keyword("ARRAY");
+    if let Some(query) = find_child(node, SyntaxKind::SELECT_STMT) {
+        format_subquery(&query, printer);
+        return;
+    }
+
     printer.write("[");
 
     let mut first = true;
@@ -626,8 +636,10 @@ pub(crate) fn format_literal(node: &SyntaxNode, printer: &mut PgPrinter) {
     for element in node.children_with_tokens() {
         if let cstree::util::NodeOrToken::Token(token) = element {
             let kind = token.kind();
-            if kind != SyntaxKind::WHITESPACE && kind != SyntaxKind::NEWLINE {
-                printer.write(token.text());
+            if kind.is_trivia() {
+                format_token(token, printer);
+            } else {
+                printer.write_verbatim(token.text());
             }
         }
     }

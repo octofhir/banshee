@@ -8,4 +8,4 @@ CREATE TABLE public.users (
     email VARCHAR(255),
     CONSTRAINT uq_email UNIQUE (email),
     CHECK (id > 0)
-)
+);

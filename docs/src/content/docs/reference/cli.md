@@ -23,8 +23,9 @@ Inputs are files, directories (walked for `*.sql`), or stdin (`-`).
 
 ## Commands
 
-- **`format`** — format SQL. `--write` rewrites files in place; `--check` exits
-  `1` if anything is unformatted.
+- **`format`** — format SQL. `--write` rewrites files in place. `--check`
+  exits `1` if a file needs formatting. A formatting error exits `2` before
+  any SQL is printed or files are rewritten.
 - **`lint`** — report findings. `--format` selects `human` / `json` / `github`
   (PR annotations) / `sarif` (code scanning); `--statistics` prints a per-rule
   count breakdown. `--breaking` runs the full pack but fails only on

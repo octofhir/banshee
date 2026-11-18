@@ -5,4 +5,4 @@ expression: formatted
 ALTER TABLE users
     ADD COLUMN age INT NOT NULL DEFAULT 0,
     DROP COLUMN legacy,
-    ALTER COLUMN name TYPE TEXT
+    ALTER COLUMN name TYPE TEXT;

@@ -12,25 +12,36 @@ use banshee_syntax::{Parse, SyntaxKind, SyntaxNode, SyntaxToken};
 use crate::config::FormatConfig;
 use crate::printer::Printer;
 use crate::rules;
+use crate::safe::{self, Style};
+use crate::validate::FormatError;
 
 /// Formats SQL source code.
 #[must_use]
 pub fn format(source: &str, config: &FormatConfig) -> String {
-    // Parse the source
-    let parse = banshee_parser::parse(source);
+    try_format(source, config).unwrap_or_else(|_| source.to_owned())
+}
 
-    // Format the parse tree
-    format_parse(&parse, config)
+/// Formats SQL or returns an error when it cannot be safely formatted.
+pub fn try_format(source: &str, config: &FormatConfig) -> Result<String, FormatError> {
+    let parse = banshee_parser::parse(source);
+    safe::format(source, &parse, Style::Sql(config), |root| {
+        print(root, config)
+    })
 }
 
 /// Formats a parsed SQL tree.
 pub fn format_parse(parse: &Parse, config: &FormatConfig) -> String {
+    let source = safe::source_text(&parse.syntax());
+    safe::format(&source, parse, Style::Sql(config), |root| {
+        print(root, config)
+    })
+    .unwrap_or(source)
+}
+
+fn print(root: &SyntaxNode, config: &FormatConfig) -> String {
     let mut printer = Printer::new(config.clone());
     printer.set_river_width(rules::standard_river_width());
-
-    let root = parse.syntax();
-    format_node(&root, &mut printer);
-
+    format_node(root, &mut printer);
     printer.finish()
 }
 
@@ -76,18 +87,17 @@ fn format_node(node: &SyntaxNode, printer: &mut Printer) {
 fn format_source_file(node: &SyntaxNode, printer: &mut Printer) {
     let mut first_stmt = true;
 
-    for child in node.children() {
-        if child.kind() == SyntaxKind::WHITESPACE || child.kind() == SyntaxKind::NEWLINE {
-            continue;
+    for element in node.children_with_tokens() {
+        match element {
+            cstree::util::NodeOrToken::Node(child) => {
+                if !first_stmt {
+                    printer.ensure_blank_line();
+                }
+                format_node(child, printer);
+                first_stmt = false;
+            }
+            cstree::util::NodeOrToken::Token(token) => format_token(token, printer),
         }
-
-        // Add blank line between statements
-        if !first_stmt {
-            printer.ensure_blank_line();
-        }
-
-        format_node(&child, printer);
-        first_stmt = false;
     }
 
     // Ensure file ends with newline
@@ -121,10 +131,14 @@ pub fn format_token(token: &SyntaxToken, printer: &mut Printer) {
         SyntaxKind::NEWLINE => {
             // Don't output raw newlines - we control line breaks
         }
-        SyntaxKind::LINE_COMMENT | SyntaxKind::BLOCK_COMMENT => {
-            // Preserve comments
-            printer.write(text);
+        SyntaxKind::LINE_COMMENT => {
+            if printer.column() > 0 {
+                printer.space();
+            }
+            printer.write_verbatim(text);
+            printer.newline();
         }
+        SyntaxKind::BLOCK_COMMENT => printer.write_verbatim(text),
 
         // Keywords - transform case
         k if k.is_keyword() => {
@@ -143,7 +157,7 @@ pub fn format_token(token: &SyntaxToken, printer: &mut Printer) {
         }
         SyntaxKind::QUOTED_IDENT => {
             // Preserve quoted identifiers exactly
-            printer.write(text);
+            printer.write_verbatim(text);
         }
 
         // Literals - preserve exactly
@@ -154,7 +168,7 @@ pub fn format_token(token: &SyntaxToken, printer: &mut Printer) {
         | SyntaxKind::BIT_STRING
         | SyntaxKind::HEX_STRING
         | SyntaxKind::PARAM => {
-            printer.write(text);
+            printer.write_verbatim(text);
         }
 
         // Punctuation

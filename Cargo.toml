@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.8"
+version = "0.2.9"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/octofhir/banshee"
@@ -33,6 +33,8 @@ phf = { version = "0.14", features = ["macros"] }
 insta = { version = "1.34", features = ["glob"] }
 proptest = "1.5"
 criterion = { version = "0.8.2", features = ["html_reports"] }
+pg_parse = "0.15"
+serde_json = "1"
 
 # Utilities
 dirs = "7"
@@ -46,13 +48,13 @@ clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
 
 # Internal crates
-banshee_syntax = { path = "crates/banshee_syntax", version = "0.2.8" }
-banshee_lexer = { path = "crates/banshee_lexer", version = "0.2.8" }
-banshee_parser = { path = "crates/banshee_parser", version = "0.2.8" }
-banshee_hir = { path = "crates/banshee_hir", version = "0.2.8" }
-banshee_completion = { path = "crates/banshee_completion", version = "0.2.8" }
-banshee_format = { path = "crates/banshee_format", version = "0.2.8" }
-banshee_config = { path = "crates/banshee_config", version = "0.2.8" }
-banshee_templater = { path = "crates/banshee_templater", version = "0.2.8" }
-banshee_schema = { path = "crates/banshee_schema", version = "0.2.8" }
-banshee_lsp = { path = "crates/banshee_lsp", version = "0.2.8" }
+banshee_syntax = { path = "crates/banshee_syntax", version = "0.2.9" }
+banshee_lexer = { path = "crates/banshee_lexer", version = "0.2.9" }
+banshee_parser = { path = "crates/banshee_parser", version = "0.2.9" }
+banshee_hir = { path = "crates/banshee_hir", version = "0.2.9" }
+banshee_completion = { path = "crates/banshee_completion", version = "0.2.9" }
+banshee_format = { path = "crates/banshee_format", version = "0.2.9" }
+banshee_config = { path = "crates/banshee_config", version = "0.2.9" }
+banshee_templater = { path = "crates/banshee_templater", version = "0.2.9" }
+banshee_schema = { path = "crates/banshee_schema", version = "0.2.9" }
+banshee_lsp = { path = "crates/banshee_lsp", version = "0.2.9" }

@@ -34,13 +34,16 @@ fn scan_token(c: &mut Cursor<'_>) -> SyntaxKind {
     let first = c.first();
 
     // Whitespace (excluding newline)
-    if first == ' ' || first == '\t' || first == '\r' {
+    if is_horizontal_whitespace(first) {
         return scan_whitespace(c);
     }
 
     // Newline
-    if first == '\n' {
+    if matches!(first, '\n' | '\r') {
         c.bump();
+        if first == '\r' && c.first() == '\n' {
+            c.bump();
+        }
         return SyntaxKind::NEWLINE;
     }
 
@@ -56,7 +59,7 @@ fn scan_token(c: &mut Cursor<'_>) -> SyntaxKind {
 
     // String literal: 'text'
     if first == '\'' {
-        return scan_string(c);
+        return scan_string(c, SyntaxKind::STRING, false);
     }
 
     // Quoted identifier: "name"
@@ -66,15 +69,18 @@ fn scan_token(c: &mut Cursor<'_>) -> SyntaxKind {
 
     // Bit string: B'101' or X'FF'
     if (first == 'b' || first == 'B') && c.second() == '\'' {
-        return scan_bit_string(c);
+        c.bump();
+        return scan_string(c, SyntaxKind::BIT_STRING, false);
     }
     if (first == 'x' || first == 'X') && c.second() == '\'' {
-        return scan_hex_string(c);
+        c.bump();
+        return scan_string(c, SyntaxKind::HEX_STRING, false);
     }
 
     // Escape string: E'...\n...'
     if (first == 'e' || first == 'E') && c.second() == '\'' {
-        return scan_escape_string(c);
+        c.bump();
+        return scan_string(c, SyntaxKind::STRING, true);
     }
 
     // Unicode string/identifier: U&'...' / U&"..."
@@ -82,7 +88,7 @@ fn scan_token(c: &mut Cursor<'_>) -> SyntaxKind {
         if c.third() == '\'' {
             c.bump(); // U
             c.bump(); // &
-            return scan_string(c);
+            return scan_string(c, SyntaxKind::STRING, false);
         }
         if c.third() == '"' {
             c.bump(); // U
@@ -99,7 +105,7 @@ fn scan_token(c: &mut Cursor<'_>) -> SyntaxKind {
             return scan_dollar_string(c);
         }
         // Check for $tag$ form - need to look ahead for closing $
-        if c.second().is_ascii_alphabetic() || c.second() == '_' {
+        if is_ident_start(c.second()) {
             if is_dollar_string_start(c) {
                 return scan_dollar_string(c);
             }
@@ -132,14 +138,18 @@ fn scan_token(c: &mut Cursor<'_>) -> SyntaxKind {
 }
 
 fn scan_whitespace(c: &mut Cursor<'_>) -> SyntaxKind {
-    c.bump_while(|ch| ch == ' ' || ch == '\t' || ch == '\r');
+    c.bump_while(is_horizontal_whitespace);
     SyntaxKind::WHITESPACE
+}
+
+fn is_horizontal_whitespace(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\x0b' | '\x0c')
 }
 
 fn scan_line_comment(c: &mut Cursor<'_>) -> SyntaxKind {
     c.bump(); // -
     c.bump(); // -
-    c.bump_while(|ch| ch != '\n');
+    c.bump_while(|ch| !matches!(ch, '\n' | '\r'));
     SyntaxKind::LINE_COMMENT
 }
 
@@ -161,29 +171,58 @@ fn scan_block_comment(c: &mut Cursor<'_>) -> SyntaxKind {
             c.bump();
         }
     }
-    SyntaxKind::BLOCK_COMMENT
+    if depth == 0 {
+        SyntaxKind::BLOCK_COMMENT
+    } else {
+        SyntaxKind::ERROR
+    }
 }
 
-fn scan_string(c: &mut Cursor<'_>) -> SyntaxKind {
+fn scan_string(c: &mut Cursor<'_>, kind: SyntaxKind, escapes: bool) -> SyntaxKind {
     c.bump(); // opening '
     loop {
         match c.first() {
+            '\\' if escapes => {
+                c.bump();
+                c.bump();
+            }
             '\'' => {
                 c.bump();
-                // Check for escaped quote ''
-                if c.first() == '\'' {
+                if kind == SyntaxKind::STRING && c.first() == '\'' {
                     c.bump();
-                    continue;
+                } else if let Some(chars) = string_continuation(c.remaining()) {
+                    c.advance_by(chars);
+                } else {
+                    return kind;
                 }
-                break;
             }
-            '\0' => break, // EOF - unterminated string
+            '\0' => return SyntaxKind::ERROR,
             _ => {
                 c.bump();
             }
         }
     }
-    SyntaxKind::STRING
+}
+
+// Adjacent quoted strings separated by whitespace containing a newline are
+// one token. Keep their separator and the original string mode.
+fn string_continuation(source: &str) -> Option<usize> {
+    let mut lookahead = Cursor::new(source);
+    let mut newline = false;
+    loop {
+        lookahead.bump_while(is_horizontal_whitespace);
+        match lookahead.first() {
+            '\n' | '\r' => {
+                newline = true;
+                lookahead.bump();
+            }
+            '\'' if newline => {
+                lookahead.bump();
+                return Some(source[..lookahead.pos()].chars().count());
+            }
+            _ => return None,
+        }
+    }
 }
 
 fn scan_quoted_ident(c: &mut Cursor<'_>) -> SyntaxKind {
@@ -199,62 +238,13 @@ fn scan_quoted_ident(c: &mut Cursor<'_>) -> SyntaxKind {
                 }
                 break;
             }
-            '\0' => break, // EOF
+            '\0' => return SyntaxKind::ERROR,
             _ => {
                 c.bump();
             }
         }
     }
     SyntaxKind::QUOTED_IDENT
-}
-
-fn scan_escape_string(c: &mut Cursor<'_>) -> SyntaxKind {
-    c.bump(); // E
-    c.bump(); // opening '
-    loop {
-        match c.first() {
-            '\\' => {
-                c.bump(); // backslash
-                if !c.is_eof() {
-                    c.bump(); // escaped char
-                }
-            }
-            '\'' => {
-                c.bump();
-                // Check for escaped quote ''
-                if c.first() == '\'' {
-                    c.bump();
-                    continue;
-                }
-                break;
-            }
-            '\0' => break, // EOF - unterminated
-            _ => {
-                c.bump();
-            }
-        }
-    }
-    SyntaxKind::STRING
-}
-
-fn scan_bit_string(c: &mut Cursor<'_>) -> SyntaxKind {
-    c.bump(); // B/b
-    c.bump(); // '
-    c.bump_while(|ch| ch == '0' || ch == '1');
-    if c.first() == '\'' {
-        c.bump();
-    }
-    SyntaxKind::BIT_STRING
-}
-
-fn scan_hex_string(c: &mut Cursor<'_>) -> SyntaxKind {
-    c.bump(); // X/x
-    c.bump(); // '
-    c.bump_while(|ch| ch.is_ascii_hexdigit());
-    if c.first() == '\'' {
-        c.bump();
-    }
-    SyntaxKind::HEX_STRING
 }
 
 fn is_dollar_string_start(c: &Cursor<'_>) -> bool {
@@ -266,7 +256,7 @@ fn is_dollar_string_start(c: &Cursor<'_>) -> bool {
     let after_dollar = &remaining[1..];
     // Find where the tag ends
     let tag_end = after_dollar
-        .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .find(|ch: char| !is_dollar_tag_char(ch))
         .unwrap_or(after_dollar.len());
     if tag_end == 0 {
         return false;
@@ -279,8 +269,8 @@ fn scan_dollar_string(c: &mut Cursor<'_>) -> SyntaxKind {
     let start = c.pos();
     c.bump(); // $
 
-    // Scan optional tag (may be empty for $$...$$)
-    c.bump_while(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+    // Scan optional tag (may be empty for $$...$$).
+    c.bump_while(is_dollar_tag_char);
     c.bump(); // closing $ of tag
 
     let tag = c.slice_from(start);
@@ -288,10 +278,10 @@ fn scan_dollar_string(c: &mut Cursor<'_>) -> SyntaxKind {
     // Scan until matching closing tag
     loop {
         if c.is_eof() {
-            break;
+            return SyntaxKind::ERROR;
         }
         if c.first() == '$' && c.starts_with(tag) {
-            c.advance_by(tag.len());
+            c.advance_by(tag.chars().count());
             break;
         }
         c.bump();
@@ -356,12 +346,16 @@ fn scan_ident_or_keyword(c: &mut Cursor<'_>) -> SyntaxKind {
 }
 
 fn is_ident_start(ch: char) -> bool {
-    // PostgreSQL allows letters (incl. non-ASCII via UTF-8) and underscore.
-    ch.is_alphabetic() || ch == '_'
+    // PostgreSQL accepts every high-bit byte in an unquoted identifier.
+    ch.is_ascii_alphabetic() || ch == '_' || !ch.is_ascii()
 }
 
 fn is_ident_continue(ch: char) -> bool {
-    ch.is_alphanumeric() || ch == '_' || ch == '$'
+    is_dollar_tag_char(ch) || ch == '$'
+}
+
+fn is_dollar_tag_char(ch: char) -> bool {
+    is_ident_start(ch) || ch.is_ascii_digit()
 }
 
 fn scan_operator_or_punct(c: &mut Cursor<'_>) -> SyntaxKind {

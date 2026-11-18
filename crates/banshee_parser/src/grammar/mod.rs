@@ -16,6 +16,9 @@ pub fn root(p: &mut Parser<'_>) {
     let m = p.start();
 
     while !p.at_end() {
+        if p.eat(SyntaxKind::SEMICOLON) {
+            continue;
+        }
         statement(p);
         // Consume optional semicolon
         p.eat(SyntaxKind::SEMICOLON);

@@ -1,8 +1,7 @@
 //! Formatter validation to ensure formatting preserves query semantics.
 //!
-//! This module provides validation functions to verify that SQL formatting
-//! doesn't break queries by comparing the semantic content of original
-//! and formatted SQL.
+//! These checks use banshee's parser and compare the original and formatted SQL
+//! token streams, including comments, punctuation and significant boundaries.
 //!
 //! # Example
 //!
@@ -19,7 +18,7 @@
 //! assert!(result.is_valid);
 //! ```
 
-use banshee_syntax::{Parse, ParseError, SyntaxKind};
+use banshee_syntax::{Parse, ParseError};
 
 use crate::config::FormatConfig;
 
@@ -126,7 +125,7 @@ impl FormatResult {
 /// This function:
 /// 1. Parses the original SQL
 /// 2. Parses the formatted SQL
-/// 3. Compares them semantically (ignoring whitespace and comments)
+/// 3. Checks that formatting preserved SQL tokens and significant boundaries
 ///
 /// # Errors
 ///
@@ -159,8 +158,7 @@ pub fn validate_format(original: &str, formatted: &str) -> Result<(), FormatErro
         ));
     }
 
-    // Compare semantic content
-    if !semantically_equal(&orig_parse, &fmt_parse) {
+    if !crate::safe::preserves_sql(original, formatted) {
         return Err(FormatError::SemanticMismatch {
             expected: normalize(&orig_parse),
             actual: normalize(&fmt_parse),
@@ -170,18 +168,19 @@ pub fn validate_format(original: &str, formatted: &str) -> Result<(), FormatErro
     Ok(())
 }
 
-/// Compares two parse trees ignoring whitespace and comments.
-///
-/// Returns `true` if both parse trees have the same semantic content.
+/// Compares the source tokens of two parse trees, including comments and
+/// significant whitespace.
 #[must_use]
 pub fn semantically_equal(a: &Parse, b: &Parse) -> bool {
-    normalize(a) == normalize(b)
+    let a = crate::safe::source_text(&a.syntax());
+    let b = crate::safe::source_text(&b.syntax());
+    crate::safe::preserves_sql(&a, &b)
 }
 
 /// Normalizes a parse tree to a canonical string representation.
 ///
 /// This extracts all non-trivia tokens and joins them with spaces,
-/// converting everything to uppercase for case-insensitive comparison.
+/// converting keywords to uppercase. Use `validate_format` to verify output.
 #[must_use]
 pub fn normalize(parse: &Parse) -> String {
     let mut tokens = Vec::new();
@@ -190,8 +189,8 @@ pub fn normalize(parse: &Parse) -> String {
             && !token.kind().is_trivia()
         {
             // Normalize case for keywords, preserve case for identifiers/strings
-            let text = if is_keyword_kind(token.kind()) {
-                token.text().to_uppercase()
+            let text = if token.kind().is_keyword() {
+                token.text().to_ascii_uppercase()
             } else {
                 token.text().to_string()
             };
@@ -199,14 +198,6 @@ pub fn normalize(parse: &Parse) -> String {
         }
     }
     tokens.join(" ")
-}
-
-/// Checks if a syntax kind is a keyword.
-fn is_keyword_kind(kind: SyntaxKind) -> bool {
-    // Check if it's a keyword by looking at the kind name
-    // Keywords in our grammar have _KW suffix
-    let kind_str = format!("{:?}", kind);
-    kind_str.ends_with("_KW")
 }
 
 /// Formats SQL with validation.
@@ -231,11 +222,9 @@ fn is_keyword_kind(kind: SyntaxKind) -> bool {
 /// ```
 #[must_use]
 pub fn format_validated(source: &str, config: &FormatConfig) -> FormatResult {
-    let formatted = crate::format::format(source, config);
-
-    match validate_format(source, &formatted) {
-        Ok(()) => FormatResult::ok(formatted),
-        Err(e) => FormatResult::with_error(formatted, e),
+    match crate::format::try_format(source, config) {
+        Ok(formatted) => FormatResult::ok(formatted),
+        Err(e) => FormatResult::with_error(source.to_owned(), e),
     }
 }
 
@@ -245,11 +234,9 @@ pub fn format_pgformatter_validated(
     source: &str,
     config: &crate::pg_formatter::PgFormatterConfig,
 ) -> FormatResult {
-    let formatted = crate::pg_format::format(source, config);
-
-    match validate_format(source, &formatted) {
-        Ok(()) => FormatResult::ok(formatted),
-        Err(e) => FormatResult::with_error(formatted, e),
+    match crate::pg_format::try_format(source, config) {
+        Ok(formatted) => FormatResult::ok(formatted),
+        Err(e) => FormatResult::with_error(source.to_owned(), e),
     }
 }
 
@@ -328,8 +315,11 @@ impl ValidationReport {
 /// This runs all validation checks and returns a detailed report.
 #[must_use]
 pub fn validate_comprehensive(source: &str, config: &FormatConfig) -> ValidationReport {
-    let formatted = crate::format::format(source, config);
-    let mut errors = Vec::new();
+    let FormatResult {
+        output: formatted,
+        mut errors,
+        ..
+    } = format_validated(source, config);
 
     // Check parsing
     let orig_parse = banshee_parser::parse(source);
@@ -339,7 +329,7 @@ pub fn validate_comprehensive(source: &str, config: &FormatConfig) -> Validation
     let fmt_ok = fmt_parse.errors().is_empty();
     let both_parse = orig_ok && fmt_ok;
 
-    if !orig_ok {
+    if !orig_ok && errors.is_empty() {
         errors.push(FormatError::InvalidInput(orig_parse.errors().to_vec()));
     }
     if !fmt_ok {
@@ -350,12 +340,10 @@ pub fn validate_comprehensive(source: &str, config: &FormatConfig) -> Validation
 
     // Check semantic equality (only if both parse)
     let semantically_equal = if both_parse {
-        let orig_norm = normalize(&orig_parse);
-        let fmt_norm = normalize(&fmt_parse);
-        if orig_norm != fmt_norm {
+        if !crate::safe::preserves_sql(source, &formatted) {
             errors.push(FormatError::SemanticMismatch {
-                expected: orig_norm.clone(),
-                actual: fmt_norm.clone(),
+                expected: normalize(&orig_parse),
+                actual: normalize(&fmt_parse),
             });
             false
         } else {

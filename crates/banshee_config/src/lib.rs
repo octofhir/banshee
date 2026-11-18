@@ -177,11 +177,17 @@ impl BansheeConfig {
     /// use so both formatting styles are honored.
     #[must_use]
     pub fn format(&self, source: &str) -> String {
+        self.try_format(source)
+            .unwrap_or_else(|_| source.to_owned())
+    }
+
+    /// Formats source with the configured engine and reports formatting failures.
+    pub fn try_format(&self, source: &str) -> Result<String, banshee_format::FormatError> {
         match self.format.style {
             StylePreset::Pgformatter => {
-                banshee_format::pg_format::format(source, &self.format.to_pg_config())
+                banshee_format::pg_format::try_format(source, &self.format.to_pg_config())
             }
-            _ => banshee_format::format(source, &self.format.to_format_config()),
+            _ => banshee_format::try_format(source, &self.format.to_format_config()),
         }
     }
 

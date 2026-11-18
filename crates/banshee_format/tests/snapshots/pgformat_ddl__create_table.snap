@@ -6,4 +6,4 @@ CREATE TABLE t (
     id BIGINT PRIMARY KEY,
     name VARCHAR(255),
     CONSTRAINT u UNIQUE (name)
-)
+);

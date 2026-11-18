@@ -6,6 +6,8 @@
 use banshee_syntax::{Parse, SyntaxKind, SyntaxNode, SyntaxToken};
 
 use crate::pg_formatter::PgFormatterConfig;
+use crate::safe::{self, Style};
+use crate::validate::FormatError;
 
 pub(crate) mod expressions;
 pub(crate) mod statements;
@@ -16,15 +18,29 @@ pub(crate) use statements::*;
 /// Formats SQL source code using pgFormatter style.
 #[must_use]
 pub fn format(source: &str, config: &PgFormatterConfig) -> String {
+    try_format(source, config).unwrap_or_else(|_| source.to_owned())
+}
+
+/// Formats SQL or returns an error when it cannot be safely formatted.
+pub fn try_format(source: &str, config: &PgFormatterConfig) -> Result<String, FormatError> {
     let parse = banshee_parser::parse(source);
-    format_parse(&parse, config)
+    safe::format(source, &parse, Style::Pg(config), |root| {
+        print(root, config)
+    })
 }
 
 /// Formats a parsed SQL tree using pgFormatter style.
 pub fn format_parse(parse: &Parse, config: &PgFormatterConfig) -> String {
+    let source = safe::source_text(&parse.syntax());
+    safe::format(&source, parse, Style::Pg(config), |root| {
+        print(root, config)
+    })
+    .unwrap_or(source)
+}
+
+fn print(root: &SyntaxNode, config: &PgFormatterConfig) -> String {
     let mut printer = PgPrinter::new(config.clone());
-    let root = parse.syntax();
-    format_node(&root, &mut printer);
+    format_node(root, &mut printer);
     printer.finish()
 }
 
@@ -132,6 +148,14 @@ impl PgPrinter {
                 self.at_line_start = false;
             }
         }
+    }
+
+    /// Indents the start of a token and copies its contents byte for byte.
+    pub(crate) fn write_verbatim(&mut self, text: &str) {
+        if self.at_line_start {
+            self.write_indent();
+        }
+        self.write_raw(text);
     }
 
     /// Writes a newline.
@@ -256,19 +280,19 @@ pub(crate) fn format_node(node: &SyntaxNode, printer: &mut PgPrinter) {
 pub(crate) fn format_source_file(node: &SyntaxNode, printer: &mut PgPrinter) {
     let mut first_stmt = true;
 
-    for child in node.children() {
-        if child.kind() == SyntaxKind::WHITESPACE || child.kind() == SyntaxKind::NEWLINE {
-            continue;
+    for element in node.children_with_tokens() {
+        match element {
+            cstree::util::NodeOrToken::Node(child) => {
+                if !first_stmt && !printer.config.no_grouping {
+                    printer.ensure_blank_line();
+                } else if !first_stmt {
+                    printer.ensure_newline();
+                }
+                format_node(child, printer);
+                first_stmt = false;
+            }
+            cstree::util::NodeOrToken::Token(token) => format_token(token, printer),
         }
-
-        if !first_stmt && !printer.config.no_grouping {
-            printer.ensure_blank_line();
-        } else if !first_stmt {
-            printer.ensure_newline();
-        }
-
-        format_node(child, printer);
-        first_stmt = false;
     }
 
     printer.ensure_newline();
@@ -299,7 +323,13 @@ pub(crate) fn format_token(token: &SyntaxToken, printer: &mut PgPrinter) {
         }
         SyntaxKind::LINE_COMMENT | SyntaxKind::BLOCK_COMMENT => {
             if !printer.should_remove_comments() {
-                printer.write(text);
+                if kind == SyntaxKind::LINE_COMMENT && printer.column > 0 {
+                    printer.space();
+                }
+                printer.write_verbatim(text);
+                if kind == SyntaxKind::LINE_COMMENT {
+                    printer.newline();
+                }
             }
         }
         k if k.is_keyword() => {
@@ -315,7 +345,7 @@ pub(crate) fn format_token(token: &SyntaxToken, printer: &mut PgPrinter) {
             printer.write_identifier(text);
         }
         SyntaxKind::QUOTED_IDENT => {
-            printer.write(text);
+            printer.write_verbatim(text);
         }
         SyntaxKind::INTEGER
         | SyntaxKind::FLOAT
@@ -324,7 +354,7 @@ pub(crate) fn format_token(token: &SyntaxToken, printer: &mut PgPrinter) {
         | SyntaxKind::BIT_STRING
         | SyntaxKind::HEX_STRING
         | SyntaxKind::PARAM => {
-            printer.write(text);
+            printer.write_verbatim(text);
         }
         SyntaxKind::SEMICOLON => {
             printer.write(";");

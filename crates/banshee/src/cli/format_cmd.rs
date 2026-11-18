@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use rayon::prelude::*;
 
@@ -31,8 +31,20 @@ pub fn run(args: &FormatArgs, cli: &Cli) -> Result<u8> {
     let config = cli.load_config(&io::discovery_anchor(&args.paths))?;
     let inputs = gather_inputs(&args.paths)?;
 
-    // Format every input in parallel; results stay aligned with `inputs`.
-    let formatted: Vec<String> = inputs.par_iter().map(|i| config.format(&i.text)).collect();
+    if args.write && inputs.iter().any(|input| input.path.is_none()) {
+        bail!("--write requires file inputs, not stdin");
+    }
+
+    // Check every input before printing output or changing any file.
+    let candidates: Vec<_> = inputs
+        .par_iter()
+        .map(|i| config.try_format(&i.text))
+        .collect();
+    let formatted = inputs
+        .iter()
+        .zip(candidates)
+        .map(|(input, result)| result.with_context(|| format!("cannot format {}", input.label)))
+        .collect::<Result<Vec<_>>>()?;
 
     let mut unformatted = 0usize;
     for (input, formatted) in inputs.iter().zip(&formatted) {
@@ -46,10 +58,7 @@ pub fn run(args: &FormatArgs, cli: &Cli) -> Result<u8> {
             continue;
         }
 
-        if args.write {
-            let Some(path) = &input.path else {
-                bail!("--write requires file inputs, not stdin");
-            };
+        if let Some(path) = input.path.as_ref().filter(|_| args.write) {
             if *formatted != input.text {
                 std::fs::write(path, formatted)?;
             }
